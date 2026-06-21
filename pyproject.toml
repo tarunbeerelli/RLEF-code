@@ -19,6 +19,7 @@ pandas = ">=2.0"
 tqdm = ">=4.66"
 evalplus = "^0.3.1"
 python-dotenv = "^1.2.2"
+e2b-code-interpreter = ">=2.8.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"
@@ -41,3 +42,9 @@ pythonpath = ["src"]
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short --cov=rlef --cov-report=term-missing"
+pythonpath = ["src"]
+markers = ["integration: tests that require external services (E2B API key, network)"]
