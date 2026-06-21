@@ -10,3 +10,7 @@ results/
 .ipynb_checkpoints/
 *.pt
 *.safetensors
+data/raw/
+data/
+.env
+.coverage
