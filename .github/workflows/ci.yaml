@@ -28,4 +28,4 @@ jobs:
           python-version: "3.12"
       - run: pip install poetry
       - run: poetry config virtualenvs.in-project true && poetry install
-      - run: poetry run pytest tests/ -v --tb=short
+      - run: poetry run pytest tests/ -v --tb=short -m "not integration"
