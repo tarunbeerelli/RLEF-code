@@ -441,7 +441,13 @@ def main():
 
     if args.benchmark in ("apps", "both"):
         eval_apps(
-            model, tokenizer, args.data_dir, args.tag, args.max_examples, args.device
+            model,
+            tokenizer,
+            args.data_dir,
+            args.tag,
+            args.max_examples,
+            args.device,
+            difficulties=args.difficulties,
         )
 
     if args.benchmark in ("humaneval", "both"):
