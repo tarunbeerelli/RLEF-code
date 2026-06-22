@@ -33,38 +33,17 @@ from dataclasses import dataclass
 from rlef.data import APPSProblem
 from rlef.tools import ToolName
 
-SYSTEM_PROMPT = """\
-You are an expert Python programmer solving competitive programming problems.
+SYSTEM_PROMPT = """You are an expert Python programmer. Solve the given programming problem by writing a complete Python solution.
+Output ONLY a Python code block like this:
 
-For each problem you must:
-1. Think through the solution
-2. Use tools to write, test and refine your code
-3. Submit your final solution using the execute tool
+```python
+# your solution here
+```
 
-Available tools:
-  execute      — run your code and see the output
-  lint         — check your code for syntax and style errors
-  generate_tests — write test cases to verify your solution
-
-Always respond in this exact format:
-<tool>TOOL_NAME</tool>
-<code>
-YOUR_PYTHON_CODE
-</code>
-
-Rules:
-- Replace TOOL_NAME with: execute, lint, or generate_tests
-- Put only Python code between the <code> tags
-- Use execute as your final submission
-- Do not add any text outside the tags
+No explanations before or after the code block.
 """
 
-PROBLEM_TEMPLATE = """\
-Solve the following programming problem in Python:
-
-{question}
-
-Write a complete Python solution.\
+PROBLEM_TEMPLATE = """{question}
 """
 
 FEEDBACK_TEMPLATE = """\
@@ -146,28 +125,32 @@ def format_feedback(tool: str, output: str) -> dict:
 
 def parse_output(text: str) -> ParsedOutput:
     """
-    Parse model output to extract tool name and code.
+    Parse model output to extract code.
 
-    Expected format:
-      <tool>execute</tool>
-      <code>
-      def solution():
-          ...
-      </code>
+    Handles two formats:
+      1. XML tags:   <tool>execute</tool><code>...</code>
+      2. Markdown:   ```python ... ```
 
-    Returns ParsedOutput with tool=None/code=None if parsing fails.
+    XML format: tool name must be valid, otherwise tool=None (invalid).
+    Markdown format: tool defaults to "execute" since model answered naturally.
     """
-    # extract tool name
+    # try XML format first
     tool_match = re.search(r"<tool>\s*(\w+)\s*</tool>", text, re.IGNORECASE)
-    tool = tool_match.group(1).lower().strip() if tool_match else None
-
-    # validate tool name
+    xml_tool = tool_match.group(1).lower().strip() if tool_match else None
     valid_tools = {"execute", "lint", "generate_tests"}
-    if tool and tool not in valid_tools:
-        tool = None
 
-    # extract code block
     code_match = re.search(r"<code>\s*(.*?)\s*</code>", text, re.DOTALL)
-    code = code_match.group(1).strip() if code_match else None
+    xml_code = code_match.group(1).strip() if code_match else None
 
-    return ParsedOutput(tool=tool, code=code, raw=text)
+    # if XML tags found, validate strictly
+    if tool_match or code_match:
+        tool = xml_tool if xml_tool in valid_tools else None
+        return ParsedOutput(tool=tool, code=xml_code, raw=text)
+
+    # fallback: try markdown code block — default tool to execute
+    md_match = re.search(r"```(?:python)?\s*\n(.*?)\n```", text, re.DOTALL)
+    if md_match:
+        code = md_match.group(1).strip()
+        return ParsedOutput(tool="execute", code=code, raw=text)
+
+    return ParsedOutput(tool=None, code=None, raw=text)

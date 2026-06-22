@@ -5,7 +5,7 @@ description = "Code generation agent with execution feedback via GRPO"
 authors = ["Tarun Beerelli <tarun99.m@gmail.com>"]
 readme = "README.md"
 packages = [{ include = "rlef", from = "src" }]
-package-mode = false
+package-mode = true
 
 [tool.poetry.dependencies]
 python = "^3.12"
@@ -25,6 +25,10 @@ bitsandbytes = ">=0.43.0"
 jupyter = ">=1.0"
 matplotlib = ">=3.8"
 seaborn = ">=0.13"
+wandb = "^0.27.2"
+regex = "^2026.5.9"
+reportlab = "^5.0.0"
+jupytext = "^1.19.4"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"

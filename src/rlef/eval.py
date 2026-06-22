@@ -84,12 +84,13 @@ def eval_apps(
     tag: str,
     max_examples: int | None = None,
     device: str = "cuda",
+    difficulties: list[str] | None = None,
 ) -> dict:
     """
     Evaluate on APPS test split.
     Returns summary dict with overall and per-difficulty pass@1.
     """
-    problems = load_apps_split(data_dir, split="test")
+    problems = load_apps_split(data_dir, split="test", difficulties=difficulties)
     if max_examples:
         problems = problems[:max_examples]
 
@@ -389,7 +390,6 @@ def _compute_summary(results: list[dict], tag: str, benchmark: str) -> dict:
 
 def load_model(checkpoint: str, device: str = "cuda"):
     """Load model and tokenizer from checkpoint or HuggingFace hub."""
-    from transformers import BitsAndBytesConfig
 
     model_path = (
         checkpoint if checkpoint != "none" else "Qwen/Qwen2.5-Coder-7B-Instruct"
@@ -401,17 +401,10 @@ def load_model(checkpoint: str, device: str = "cuda"):
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
 
-    # use 4-bit for eval too — same memory constraints as training
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
-    )
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
-        quantization_config=bnb_config,
-        device_map="auto",
+        dtype=torch.bfloat16,
+        device_map="cuda:0",
         trust_remote_code=True,
     )
     model.eval()
@@ -441,6 +434,7 @@ def main():
     parser.add_argument("--data_dir", type=str, default="data/raw/APPS")
     parser.add_argument("--max_examples", type=int, default=None)
     parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--difficulties", type=str, nargs="+", default=None)
     args = parser.parse_args()
 
     model, tokenizer = load_model(args.checkpoint, args.device)

@@ -38,7 +38,7 @@ from rlef.prompt import format_prompt, parse_output
 from rlef.reward import execution_reward
 from rlef.tools import call_tool
 from rlef.trajectory import Trajectory
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import GRPOConfig, GRPOTrainer
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -306,24 +306,11 @@ def main():
     tokenizer.padding_side = "left"
 
     # ── Load model ────────────────────────────────────────────────────────────
-    if cfg.get("load_in_4bit", False):
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_use_double_quant=True,
-        )
-        model = AutoModelForCausalLM.from_pretrained(
-            cfg["model_name"],
-            quantization_config=bnb_config,
-            trust_remote_code=True,
-        )
-    else:
-        model = AutoModelForCausalLM.from_pretrained(
-            cfg["model_name"],
-            torch_dtype=torch.bfloat16,
-            trust_remote_code=True,
-        )
+    model = AutoModelForCausalLM.from_pretrained(
+        cfg["model_name"],
+        dtype=torch.bfloat16,
+        trust_remote_code=True,
+    )
 
     # ── Load and prepare data ─────────────────────────────────────────────────
     if is_main:
