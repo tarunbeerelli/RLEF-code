@@ -1,36 +1,23 @@
-# configs/train.yaml
 model_name: "Qwen/Qwen2.5-Coder-7B-Instruct"
-
-# Data
 data_dir: "data/raw/APPS"
-difficulties: ["introductory", "interview"]   # leave out competition for now
+difficulties: ["introductory"]
 train_split: "train"
-
-# Episode
-max_turns: 1          # single-turn for now, set to 3 for multi-turn
+max_turns: 1
 reward_type: "continuous"
 shaped: true
 credit_type: "step"
-
-# GRPO
-num_generations: 8
+num_generations: 4
 temperature: 0.9
 kl_coef: 0.05
 max_prompt_length: 1024
-max_new_tokens: 1024
-
-# Training
+max_new_tokens: 512
 learning_rate: 1e-5
 per_device_batch: 1
 gradient_accumulation_steps: 8
 num_epochs: 1
 bf16: true
-
-# Quantization (for 7B on 2x RTX 3090)
-load_in_4bit: true
-
-# Logging
-logging_steps: 10
-save_steps: 100
+load_in_4bit: false
+logging_steps: 5
+save_steps: 50
 output_dir: "./checkpoints"
 wandb_project: "rlef-code"
