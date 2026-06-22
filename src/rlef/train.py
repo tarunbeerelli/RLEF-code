@@ -23,6 +23,7 @@ Ablations: set in configs/train.yaml
   max_turns:   1 | 3
 """
 
+import argparse
 import os
 import random
 import re
@@ -284,7 +285,11 @@ def _replay_trajectory(
 
 
 def main():
-    cfg = load_config()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, default="configs/train.yaml")
+    args, _ = parser.parse_known_args()
+
+    cfg = load_config(args.config)
     accelerator = Accelerator()
     is_main = accelerator.is_main_process
 
