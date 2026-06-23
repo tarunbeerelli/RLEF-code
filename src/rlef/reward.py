@@ -123,6 +123,14 @@ def _classify_error(result: ToolResult) -> str:
     return "RuntimeError"
 
 
+MAX_TESTS_BY_DIFFICULTY = {
+    "introductory": 10,
+    "interview": 20,
+    "competition": 30,
+}
+DEFAULT_MAX_TESTS = 10
+
+
 def execution_reward(
     code: str,
     inputs: list[str],
@@ -131,6 +139,7 @@ def execution_reward(
     reward_type: Literal["continuous", "binary"] = "continuous",
     shaped: bool = True,
     timeout: int = 10,
+    difficulty: str = "introductory",
 ) -> ExecutionResult:
     """
     Main reward function. Runs code against test cases and returns
@@ -147,6 +156,12 @@ def execution_reward(
     """
     if not inputs:
         return ExecutionResult(0, 0, 0.0, 0.0, 0.0, [])
+
+    # cap test cases by difficulty — keeps execution fast without
+    # sacrificing reward signal quality meaningfully
+    max_tests = MAX_TESTS_BY_DIFFICULTY.get(difficulty, DEFAULT_MAX_TESTS)
+    inputs = inputs[:max_tests]
+    outputs = outputs[:max_tests]
 
     passed, total, error_types = _run_against_test_cases(
         code, inputs, outputs, fn_name, timeout

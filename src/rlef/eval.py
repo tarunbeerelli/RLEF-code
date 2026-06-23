@@ -27,10 +27,13 @@ import json
 from pathlib import Path
 
 import torch
+from dotenv import load_dotenv
 from rlef.data import load_apps_split
 from rlef.prompt import format_prompt, parse_output
 from rlef.reward import execution_reward
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+load_dotenv()
 
 # ── Greedy decode ─────────────────────────────────────────────────────────────
 

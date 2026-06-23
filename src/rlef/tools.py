@@ -49,59 +49,102 @@ class ToolResult:
 # ── Tool 1: Execute ───────────────────────────────────────────────────────────
 
 
-def execute(code: str, timeout: int = 10) -> ToolResult:
+def execute_local(code: str, timeout: int = 10) -> ToolResult:
     """
-    Run code in an E2B sandbox and return the result.
-
-    Timeout is 10s by default — enough for APPS problems,
-    short enough to not burn through sandbox credits on infinite loops.
-
-    The sandbox is created fresh per call. This is slightly slower
-    (~500ms overhead) but guarantees no state leaks between rollouts.
+    Run code locally in a subprocess — fallback when E2B is unavailable.
+    Only use on trusted code (eval/training on known datasets).
     """
-    from e2b_code_interpreter import Sandbox
+    import os
+    import subprocess
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+        f.write(code)
+        tmp = f.name
 
     try:
-        with Sandbox.create(timeout=timeout + 5) as sbx:
-            result = sbx.run_code(code, timeout=timeout)
+        result = subprocess.run(
+            ["python3", tmp], capture_output=True, text=True, timeout=timeout
+        )
+        stdout = result.stdout
+        stderr = result.stderr
+        error = stderr if result.returncode != 0 else ""
 
-            stdout = "".join(result.logs.stdout)
-            stderr = "".join(result.logs.stderr)
-            error = str(result.error) if result.error else ""
+        parts = []
+        if stdout:
+            parts.append(f"stdout:\n{stdout.strip()}")
+        if stderr:
+            parts.append(f"stderr:\n{stderr.strip()}")
+        if not parts:
+            parts.append("(no output)")
 
-            # Build a single output string the model sees as feedback
-            parts = []
-            if stdout:
-                parts.append(f"stdout:\n{stdout.strip()}")
-            if stderr:
-                parts.append(f"stderr:\n{stderr.strip()}")
-            if error:
-                parts.append(f"error:\n{error.strip()}")
-            if not parts:
-                parts.append("(no output)")
-
-            output = "\n".join(parts)
-            success = not bool(error)
-
-            return ToolResult(
-                tool=ToolName.EXECUTE,
-                success=success,
-                output=output,
-                stdout=stdout,
-                stderr=stderr,
-                error=error,
-            )
-
-    except Exception as e:
         return ToolResult(
             tool=ToolName.EXECUTE,
-            success=False,
-            output=f"Sandbox error: {e}",
-            error=str(e),
+            success=result.returncode == 0,
+            output="\n".join(parts),
+            stdout=stdout,
+            stderr=stderr,
+            error=error,
         )
+    except subprocess.TimeoutExpired:
+        return ToolResult(
+            tool=ToolName.EXECUTE, success=False, output="Timeout", error="Timeout"
+        )
+    except Exception as e:
+        return ToolResult(
+            tool=ToolName.EXECUTE, success=False, output=str(e), error=str(e)
+        )
+    finally:
+        os.unlink(tmp)
 
 
-# ── Tool 2: Lint ──────────────────────────────────────────────────────────────
+def execute(code: str, timeout: int = 10) -> ToolResult:
+    """
+    Run code locally in a subprocess.
+    E2B bypassed due to ongoing outage — local execution on Vast.ai machine.
+    """
+    import os
+    import subprocess
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+        f.write(code)
+        tmp = f.name
+
+    try:
+        result = subprocess.run(
+            ["python3", tmp], capture_output=True, text=True, timeout=timeout
+        )
+        stdout = result.stdout
+        stderr = result.stderr
+        error = stderr if result.returncode != 0 else ""
+
+        parts = []
+        if stdout:
+            parts.append(f"stdout:\n{stdout.strip()}")
+        if stderr:
+            parts.append(f"stderr:\n{stderr.strip()}")
+        if not parts:
+            parts.append("(no output)")
+
+        return ToolResult(
+            tool=ToolName.EXECUTE,
+            success=result.returncode == 0,
+            output="\n".join(parts),
+            stdout=stdout,
+            stderr=stderr,
+            error=error,
+        )
+    except subprocess.TimeoutExpired:
+        return ToolResult(
+            tool=ToolName.EXECUTE, success=False, output="Timeout", error="Timeout"
+        )
+    except Exception as e:
+        return ToolResult(
+            tool=ToolName.EXECUTE, success=False, output=str(e), error=str(e)
+        )
+    finally:
+        os.unlink(tmp)
 
 
 def lint(code: str) -> ToolResult:
