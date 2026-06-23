@@ -169,6 +169,9 @@ def make_reward_fn(cfg: dict):
                     fn_name=fn,
                     reward_type=reward_type,
                     shaped=shaped,
+                    difficulty=kwargs.get("difficulty", ["introductory"])[i]
+                    if kwargs.get("difficulty")
+                    else "introductory",
                 )
                 rewards.append(result.final_reward)
 
