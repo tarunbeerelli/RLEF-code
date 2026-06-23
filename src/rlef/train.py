@@ -33,6 +33,8 @@ import wandb
 import yaml
 from accelerate import Accelerator
 from datasets import Dataset
+from dotenv import load_dotenv
+from peft import LoraConfig, TaskType, get_peft_model
 from rlef.data import APPSProblem, difficulty_split, load_apps_split
 from rlef.prompt import format_prompt, parse_output
 from rlef.reward import execution_reward
@@ -84,8 +86,8 @@ def prepare_dataset(
                 "prompt": prompt,
                 "problem_id": p.problem_id,
                 "difficulty": p.difficulty,
-                "inputs": p.inputs,
-                "outputs": p.outputs,
+                "inputs": [str(x) for x in p.inputs],
+                "outputs": [str(x) for x in p.outputs],
                 "fn_name": p.fn_name or "",
             }
         )
@@ -288,6 +290,7 @@ def _replay_trajectory(
 
 
 def main():
+    load_dotenv()
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/train.yaml")
     args, _ = parser.parse_known_args()
@@ -315,6 +318,19 @@ def main():
         trust_remote_code=True,
     )
 
+    # LoRA — only train adapter weights (~0.5% of params)
+    # keeps optimizer states tiny, fits in 48GB with DDP
+    lora_config = LoraConfig(
+        task_type=TaskType.CAUSAL_LM,
+        r=16,
+        lora_alpha=32,
+        lora_dropout=0.05,
+        target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],
+        bias="none",
+    )
+    model = get_peft_model(model, lora_config)
+    model.print_trainable_parameters()
+
     # ── Load and prepare data ─────────────────────────────────────────────────
     if is_main:
         print("Loading APPS dataset...")
@@ -334,9 +350,8 @@ def main():
     grpo_config = GRPOConfig(
         num_generations=cfg["num_generations"],
         temperature=cfg["temperature"],
-        max_prompt_length=cfg["max_prompt_length"],
         max_completion_length=cfg["max_new_tokens"],
-        kl_coef=cfg["kl_coef"],
+        beta=cfg["kl_coef"],
         output_dir=cfg["output_dir"],
         num_train_epochs=cfg["num_epochs"],
         per_device_train_batch_size=cfg["per_device_batch"],
@@ -344,7 +359,6 @@ def main():
         learning_rate=cfg["learning_rate"],
         lr_scheduler_type="cosine",
         warmup_ratio=0.05,
-        optim="adamw_torch_fused",
         bf16=cfg["bf16"],
         logging_steps=cfg["logging_steps"],
         save_steps=cfg["save_steps"],
