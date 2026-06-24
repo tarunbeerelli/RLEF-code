@@ -6,7 +6,7 @@ max_turns: 1
 reward_type: "continuous"
 shaped: true
 credit_type: "step"
-num_generations: 4
+num_generations: 8
 temperature: 0.9
 kl_coef: 0.05
 max_prompt_length: 1024
@@ -14,12 +14,12 @@ max_new_tokens: 256
 learning_rate: 0.00001
 per_device_batch: 1
 gradient_accumulation_steps: 8
-num_epochs: 1
+num_epochs: 3
 bf16: true
-gradient_checkpointing: true
 load_in_4bit: false
+gradient_checkpointing: true
 logging_steps: 5
-save_steps: 50
+save_steps: 100
 output_dir: "./checkpoints"
 wandb_project: "rlef-code"
 wandb_entity: "tarunbeerelli"

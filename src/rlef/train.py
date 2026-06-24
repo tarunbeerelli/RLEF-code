@@ -28,12 +28,15 @@ import os
 import random
 import re
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import torch
 import wandb
 import yaml
 from accelerate import Accelerator
 from datasets import Dataset
-from dotenv import load_dotenv
 from peft import LoraConfig, TaskType, get_peft_model
 from rlef.data import APPSProblem, difficulty_split, load_apps_split
 from rlef.prompt import format_prompt, parse_output
@@ -290,7 +293,6 @@ def _replay_trajectory(
 
 
 def main():
-    load_dotenv()
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/train.yaml")
     args, _ = parser.parse_known_args()

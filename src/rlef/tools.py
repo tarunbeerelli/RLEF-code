@@ -98,7 +98,7 @@ def execute_local(code: str, timeout: int = 10) -> ToolResult:
         os.unlink(tmp)
 
 
-def execute(code: str, timeout: int = 10) -> ToolResult:
+def execute(code: str, timeout: int = 30) -> ToolResult:
     """
     Run code locally in a subprocess.
     E2B bypassed due to ongoing outage — local execution on Vast.ai machine.
