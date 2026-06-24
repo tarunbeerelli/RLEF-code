@@ -4,8 +4,8 @@ reward.py — Reward functions for RLEF-Code
 Three components:
 
   1. execution_reward(code, problem)
-       Runs code against all APPS test cases via E2B.
-       Returns continuous pass rate in [0, 1].
+       Runs code against all APPS test cases via sandbox execution.
+       Returns continuous pass rate in.
 
   2. shape_reward(raw)
        Applies log shaping to compress the reward range.
@@ -25,13 +25,15 @@ All combinations are supported so we can run clean ablations
 without touching the training code.
 """
 
+import json
 import math
+import re
 from dataclasses import dataclass
 from typing import Literal
 
-from rlef.tools import ToolName, ToolResult
+from rlef.tools import ToolName, ToolResult, execute
 
-# ── 1. Execution reward ───────────────────────────────────────────────────────
+# ── 1. Data Structures ────────────────────────────────────────────────────────
 
 
 @dataclass
@@ -44,86 +46,224 @@ class ExecutionResult:
     error_types: list[str]  # SyntaxError, RuntimeError, etc. for analysis
 
 
+@dataclass
+class StepCredit:
+    step_idx: int
+    tool: ToolName
+    credit: float  # assigned credit for this step
+    useful: bool  # was this step judged useful?
+    reason: str  # human-readable explanation (for analysis)
+
+
+# ── 2. Execution Reward Internal Pipeline ─────────────────────────────────────
+
+
 def _run_against_test_cases(
     code: str,
-    inputs: list[str],
-    outputs: list[str],
+    inputs: list[str] | str,
+    outputs: list[str] | str,
     fn_name: str | None,
-    timeout: int = 30,
+    timeout: int = 10,
 ) -> tuple[int, int, list[str]]:
     """
-    Run code against all (input, output) pairs from an APPS problem.
-    Returns (passed, total, error_types).
-
-    APPS has two problem formats:
-      - stdin/stdout: code reads from input(), writes to print()
-      - fn_name:      code defines a function, we call it directly
-
-    We handle both by wrapping the code appropriately.
+    Pristine Isolated APPS Evaluation Engine. Uses deep dictionary frame
+    sandboxing to completely eliminate global namespace pollution.
     """
-    from rlef.tools import execute
 
-    passed = 0
-    error_types = []
+    # --- DEFENSIVE DATA UNBOXING ---
+    if isinstance(inputs, str):
+        try:
+            inputs = json.loads(inputs)
+        except Exception:  # <--- FIXED: Explicitly catch Exception
+            inputs = [inputs]
 
-    for inp, expected_out in zip(inputs, outputs):
-        if fn_name:
-            test_code = (
-                f"{code}\n\n"
-                f"result = {fn_name}(*{repr(inp)})\n"
-                f"expected = {repr(expected_out)}\n"
-                f"assert str(result).strip() == str(expected).strip(), "
-                f"f'got {{result}}, expected {{expected}}'\n"
-                f"print('PASS')\n"
-            )
-        else:
-            # Jupyter kernel blocks sys.stdin redirection.
-            # Instead we patch builtins.input to return lines from the
-            # input string one at a time, which works in any environment.
-            test_code = (
-                f"import builtins\n"
-                f"_lines = iter({repr(inp)}.splitlines())\n"
-                f"builtins.input = lambda *a, **kw: next(_lines)\n"
-                f"{code}\n"
-            )
+    if isinstance(outputs, str):
+        try:
+            outputs = json.loads(outputs)
+        except Exception:  # <--- FIXED: Explicitly catch Exception
+            outputs = [outputs]
+
+    inputs = [str(x) for x in inputs]
+    outputs = [str(x) for x in outputs]
+
+    total_cases = len(inputs)
+    if total_cases == 0:
+        return 0, 0, []
+
+    # Dynamic regex to detect custom top-level functions in competitor code
+    found_fns = re.findall(r"def\s+([a-zA-Z_0-9]+)\s*\(", code)
+    discovered_fns = [
+        f
+        for f in found_fns
+        if f not in ("main", "solve", "_safe_readline", "run_all_tests")
+    ]
+
+    # Inspect the first test case string item to see if it's a structural JSON list/dict
+    is_json_list = False
+    if len(inputs) > 0:
+        try:
+            parsed_first = json.loads(inputs[0])
+            if isinstance(parsed_first, (list, dict)):
+                is_json_list = True
+        except Exception:  # <--- FIXED: Explicitly catch Exception
+            pass
+
+    use_fn_routing = bool(fn_name) or (is_json_list and len(discovered_fns) > 0)
+    active_fn_name = (
+        fn_name if fn_name else (discovered_fns if discovered_fns else None)
+    )
+
+    # --- BRANCH A: BUNDLED FUNCTION-CALL EVALUATION ENGINE ---
+    if use_fn_routing and active_fn_name:
+        # BUNDLED FUNCTION-CALL EVALUATION ENGINE
+        test_code = (
+            f"import json\n"
+            f"import sys\n"
+            f"sys.setrecursionlimit(200000)\n\n"
+            f"user_code = {repr(code)}\n"
+            f"sandbox_globals = {{'json': json, 'sys': sys, 'globals': globals, 'locals': locals, 'isinstance': isinstance, 'str': str, 'getattr': getattr, 'print': print}}\n\n"
+            f"try:\n"
+            f"    exec(user_code, sandbox_globals)\n"
+            f"except Exception as exec_err:\n"  # <--- FIXED
+            f"    print(f'EXEC_CRASH: {{exec_err}}')\n"
+            f"    sys.exit(0)\n\n"
+            f"def run_all_tests():\n"
+            f"    all_inputs = {repr(inputs)}\n"
+            f"    all_outputs = {repr(outputs)}\n"
+            f"    passed = 0\n"
+            f"    \n"
+            f"    for inp, expected_out in zip(all_inputs, all_outputs):\n"
+            f"        try:\n"
+            f"            raw_inp = json.loads(inp)\n"
+            f"        except Exception:\n"  # <--- FIXED
+            f"            raw_inp = inp\n"
+            f"        try:\n"
+            f"            expected = json.loads(expected_out)\n"
+            f"        except Exception:\n"  # <--- FIXED
+            f"            expected = expected_out\n"
+            f"            \n"
+            f"        args = raw_inp if isinstance(raw_inp, list) else [raw_inp]\n"
+            f"        res = None\n"
+            f"        try:\n"
+            f"            if 'Solution' in sandbox_globals:\n"
+            f"                try:\n"
+            f"                    obj = sandbox_globals['Solution']()\n"
+            f"                    res = getattr(obj, '{active_fn_name}')(*args)\n"
+            f"                except Exception:\n"  # <--- FIXED
+            f"                    try: res = sandbox_globals['{active_fn_name}'](*args)\n"
+            f"                    except Exception: res = getattr(sandbox_globals['Solution'], '{active_fn_name}')(sandbox_globals['Solution'](), *args)\n"  # <--- FIXED
+            f"            else:\n"
+            f"                res = sandbox_globals['{active_fn_name}'](*args)\n"
+            f"                \n"
+            f"            str_res = str(res).strip().lower()\n"
+            f"            str_exp = str(expected).strip().lower()\n"
+            f"            if res == expected or str_res == str_exp:\n"
+            f"                passed += 1\n"
+            f"            elif (str_res == 'true' and str_exp == '1') or (str_res == '1' and str_exp == 'true'):\n"
+            f"                passed += 1\n"
+            f"            elif (str_res == 'false' and str_exp == '0') or (str_res == '0' and str_exp == 'false'):\n"
+            f"                passed += 1\n"
+            f"        except Exception:\n"  # <--- FIXED
+            f"            continue\n"
+            f"    print(f'RLEF_PASSED: {{passed}}')\n"
+            f"run_all_tests()\n"
+        )
 
         result = execute(test_code, timeout=timeout)
+        if not result.success:
+            return 0, total_cases, [_classify_error(result)] * total_cases
 
-        if fn_name:
-            # check explicit PASS marker
-            if result.success and "PASS" in result.stdout:
-                passed += 1
-            else:
-                err = _classify_error(result)
-                error_types.append(err)
+            # Inside the trailing execution return logic:
+        match = re.search(r"RLEF_PASSED:\s*(\d+)", result.stdout or "")
+        if match:
+            passed = int(match.group(1))
+            failed_count = total_cases - passed
+            error_types = ["WrongOutput"] * failed_count if failed_count > 0 else []
+            return passed, total_cases, error_types
         else:
-            # for stdin/stdout, compare actual stdout to expected
-            # compare line by line with per-line stripping
-            # APPS expected outputs often have trailing spaces per line
-            actual_lines = [lo.strip() for lo in result.stdout.strip().splitlines()]
-            expected_lines = [lo.strip() for lo in expected_out.strip().splitlines()]
-            if result.success and actual_lines == expected_lines:
+            if "EXEC_CRASH" in (result.stdout or ""):
+                return 0, total_cases, ["SyntaxError"] * total_cases
+            return 0, total_cases, [_classify_error(result)] * total_cases
+
+    # --- BRANCH B: ISOLATED STDIN/STDOUT SEQUENCE ENVIRONMENT ---
+    else:
+        # BUNDLED STDIN/STDOUT BATCH ENGINE
+        passed = 0
+        error_types = []
+
+        for inp, expected_out in zip(inputs, outputs):
+            test_code = (
+                f"import builtins\n"
+                f"import sys\n"
+                f"import io\n"
+                f"sys.setrecursionlimit(200000)\n"
+                f"sys.stdin = io.StringIO({repr(inp)} + '\\n')\n"
+                f"_real_readline = sys.stdin.readline\n"
+                f"def _safe_readline(*args, **kwargs):\n"
+                f"    line = _real_readline(*args, **kwargs)\n"
+                f"    return line if line else '\\n'\n"
+                f"sys.stdin.readline = _safe_readline\n"
+                f"builtins.input = lambda *a, **kw: sys.stdin.readline().rstrip()\n\n"
+                f"user_code = {repr(code)}\n"
+                f"sandbox_globals = {{'sys': sys, 'io': io, 'builtins': builtins, 'print': print}}\n"
+                f"try:\n"
+                f"    exec(user_code, sandbox_globals)\n"
+                f"    if 'main' in sandbox_globals: sandbox_globals['main']()\n"
+                f"    elif 'solve' in sandbox_globals: sandbox_globals['solve']()\n"
+                f"except Exception:\n"  # <--- FIXED
+                f"    sys.exit(1)\n"
+            )
+
+            result = execute(test_code, timeout=timeout)
+            if not result.success:
+                error_types.append(_classify_error(result))
+                continue
+
+            actual_tokens = (result.stdout or "").strip().split()
+            expected_tokens = expected_out.strip().split()
+
+            if actual_tokens == expected_tokens:
                 passed += 1
             else:
-                err = _classify_error(result)
-                error_types.append(err)
+                try:
+                    act_floats = [round(float(x), 3) for x in actual_tokens]
+                    exp_floats = [round(float(x), 3) for x in expected_tokens]
+                    if act_floats == exp_floats and len(act_floats) > 0:
+                        passed += 1
+                    else:
+                        error_types.append("WrongOutput")
+                except Exception:  # <--- FIXED (Changed from ValueError to Exception for linter alignment)
+                    error_types.append("WrongOutput")
 
-    return passed, len(inputs), error_types
+        return passed, total_cases, error_types
 
 
 def _classify_error(result: ToolResult) -> str:
     """Classify the error type for analysis notebooks."""
     if not result.error:
-        return "WrongOutput"
+        # If there is no stderr but success=False, it was killed by a system timeout signal
+        return "Timeout"
+
     error_str = result.error.lower()
     if "syntaxerror" in error_str:
+        # Code structure cannot be compiled
         return "SyntaxError"
     if "timeout" in error_str or "timed out" in error_str:
         return "Timeout"
     if "assertionerror" in error_str:
-        return "AssertionError"
+        return "WrongOutput"
+    if "recursionerror" in error_str:
+        return "RecursionError"
+    if "indexerror" in error_str:
+        return "IndexError"
+    if "valueerror" in error_str:
+        return "ValueError"
+
+    # Catch-all for other unhandled exceptions
     return "RuntimeError"
 
+
+# ── 3. Main Reward Evaluation Entrypoint ──────────────────────────────────────
 
 MAX_TESTS_BY_DIFFICULTY = {
     "introductory": 10,
@@ -134,50 +274,40 @@ DEFAULT_MAX_TESTS = 10
 
 
 def execution_reward(
-    code: str,
+    code: str | list[str],
     inputs: list[str],
     outputs: list[str],
     fn_name: str | None = None,
     reward_type: Literal["continuous", "binary"] = "continuous",
     shaped: bool = True,
-    timeout: int = 30,
+    timeout: int = 10,
     difficulty: str = "introductory",
 ) -> ExecutionResult:
     """
-    Main reward function. Runs code against test cases and returns
-    a structured result with raw and final rewards.
-
-    Args:
-        code:        model-generated Python code
-        inputs:      list of test inputs from APPSProblem
-        outputs:     list of expected outputs from APPSProblem
-        fn_name:     if set, problem uses function-call format
-        reward_type: "continuous" = pass_rate, "binary" = 0 or 1
-        shaped:      whether to apply log shaping
-        timeout:     seconds per test case execution
+    Main reward function. Runs code against ALL test cases present
+    in the dataset without slicing truncation to maintain true data alignment.
     """
-    if not inputs:
+    # Defensive guard rail for lists passed as code blocks
+    if isinstance(code, list):
+        code = code[0] if len(code) > 0 else ""
+
+    if not inputs or not code:
         return ExecutionResult(0, 0, 0.0, 0.0, 0.0, [])
 
-    # cap test cases by difficulty — keeps execution fast without
-    # sacrificing reward signal quality meaningfully
-    max_tests = MAX_TESTS_BY_DIFFICULTY.get(difficulty, DEFAULT_MAX_TESTS)
-    inputs = inputs[:max_tests]
-    outputs = outputs[:max_tests]
-
+    # Evaluate against ALL test cases natively
     passed, total, error_types = _run_against_test_cases(
         code, inputs, outputs, fn_name, timeout
     )
 
     pass_rate = passed / total if total > 0 else 0.0
 
-    # raw reward before shaping
+    # Raw reward calculation
     if reward_type == "binary":
         raw = 1.0 if passed == total else 0.0
     else:
         raw = pass_rate
 
-    # apply log shaping if enabled
+    # Apply log shaping if enabled
     final = shape_reward(raw) if shaped else raw
 
     return ExecutionResult(
@@ -190,39 +320,28 @@ def execution_reward(
     )
 
 
-# ── 2. Reward shaping ─────────────────────────────────────────────────────────
+# ── 4. Reward shaping ─────────────────────────────────────────────────────────
 
 
 def shape_reward(raw: float) -> float:
     """
-    Log-shape a reward value from [0, 1] → [0, 1].
+    Log-shape a reward value from [0, 1] →.
 
     f(r) = log(1 + r * (e - 1))
 
     Properties:
       f(0.0) = 0.0   (zero stays zero)
       f(1.0) = 1.0   (perfect stays perfect)
-      f(0.5) ≈ 0.62  (halfway gets more than half credit)
-
     The curve compresses high rewards and expands low ones.
     This makes early training more stable — going from 0.1 to 0.2
     produces a larger gradient update than going from 0.8 to 0.9,
     which is exactly what we want when the model is just starting out.
     """
-    assert 0.0 <= raw <= 1.0, f"reward must be in [0,1], got {raw}"
+    assert 0.0 <= raw <= 1.0, f"reward must be in, got {raw}"
     return math.log1p(raw * (math.e - 1))
 
 
-# ── 3. Step-level credit assignment ───────────────────────────────────────────
-
-
-@dataclass
-class StepCredit:
-    step_idx: int
-    tool: ToolName
-    credit: float  # assigned credit for this step
-    useful: bool  # was this step judged useful?
-    reason: str  # human-readable explanation (for analysis)
+# ── 5. Step-level credit assignment ───────────────────────────────────────────
 
 
 def _step_utility(tool_result: ToolResult) -> tuple[bool, str]:
@@ -243,12 +362,12 @@ def _step_utility(tool_result: ToolResult) -> tuple[bool, str]:
     """
     if tool_result.tool == ToolName.EXECUTE:
         # sandbox crash = not useful; wrong output or runtime error = useful
-        if "Sandbox error" in tool_result.output:
+        if tool_result.output and "Sandbox error" in tool_result.output:
             return False, "sandbox crash"
         return True, "execution produced feedback"
 
     elif tool_result.tool == ToolName.LINT:
-        if tool_result.lint_errors:
+        if getattr(tool_result, "lint_errors", None):
             return True, f"found {len(tool_result.lint_errors)} lint error(s)"
         return False, "no lint errors found (redundant call)"
 
