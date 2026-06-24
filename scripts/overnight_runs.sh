@@ -20,58 +20,100 @@ run_train() {
 }
 
 run_eval() {
-    local checkpoint=$1 tag=$2
-    log "=== START EVAL: $tag ==="
+    local checkpoint=$1 tag=$2 diffs=$3
+    log "=== START EVAL: $tag (Diff: $diffs) ==="
     poetry run python -m rlef.eval \
         --checkpoint "$checkpoint" \
         --tag "$tag" \
         --benchmark apps \
         --max_examples 200 \
-        --difficulties introductory \
+        --difficulties "$diffs" \
         --data_dir data/raw/APPS \
         --device cuda \
-        > "logs/eval_${tag}.log" 2>&1
-    log "=== END EVAL: $tag ($(grep 'Overall pass@1' logs/eval_${tag}.log)) ==="
+        > "logs/eval_${tag}_${diffs}.log" 2>&1
+    log "=== END EVAL: $tag ($diffs) ($(grep 'Overall pass@1' logs/eval_${tag}_${diffs}.log || echo 'N/A')) ==="
 }
 
-# ── Run 2: single-turn, 3 epochs (main result) ────────────────────────────────
-cp configs/train.yaml configs/runs/run2_single_3ep.yaml
+# ── Run 1: single-turn, 1 epoch (Baseline Redo) ────────────────────────────────
+cat << 'CONFIG' > configs/runs/run1_single_1ep.yaml
+num_epochs: 1
+max_turns: 1
+credit_type: "step"
+difficulties: ["introductory"]
+reward_type: "continuous"
+shaped: false
+CONFIG
+run_train "configs/runs/run1_single_1ep.yaml" "run1_single_1ep"
+cp -r checkpoints/final checkpoints/run1_single_1ep || true
+run_eval "checkpoints/run1_single_1ep" "run1_single_1ep" "introductory"
+
+# ── Run 2: single-turn, 3 epochs (Main Converged Baseline for Q1) ──────────────
+cat << 'CONFIG' > configs/runs/run2_single_3ep.yaml
+num_epochs: 3
+max_turns: 1
+credit_type: "step"
+difficulties: ["introductory"]
+reward_type: "continuous"
+shaped: false
+CONFIG
 run_train "configs/runs/run2_single_3ep.yaml" "run2_single_3ep"
-cp -r checkpoints/final checkpoints/run2_single_3ep
-run_eval "checkpoints/run2_single_3ep" "run2_single_3ep"
+cp -r checkpoints/final checkpoints/run2_single_3ep || true
+run_eval "checkpoints/run2_single_3ep" "run2_single_3ep" "introductory"
 
-# ── Run 3: multi-turn 3 turns, 2 epochs (headline finding) ───────────────────
-cp configs/train.yaml configs/runs/run3_multiturn.yaml
-sed -i 's/max_turns: 1/max_turns: 3/' configs/runs/run3_multiturn.yaml
-sed -i 's/num_epochs: 3/num_epochs: 2/' configs/runs/run3_multiturn.yaml
+# ── Run 5: Zero-Shot Generalization Checkpoint Evaluation (Answers Q4) ────────
+# Evaluates Run 2's converged model on completely unseen INTERVIEW problems
+run_eval "checkpoints/run2_single_3ep" "run2_single_3ep_generalization" "interview"
+
+# ── Run 3: multi-turn 3 turns, 2 epochs (Headline Finding for Q2 & Q5) ─────────
+cat << 'CONFIG' > configs/runs/run3_multiturn.yaml
+num_epochs: 2
+max_turns: 3
+credit_type: "step"
+difficulties: ["introductory"]
+reward_type: "continuous"
+shaped: false
+CONFIG
 run_train "configs/runs/run3_multiturn.yaml" "run3_multiturn"
-cp -r checkpoints/final checkpoints/run3_multiturn
-run_eval "checkpoints/run3_multiturn" "run3_multiturn"
+cp -r checkpoints/final checkpoints/run3_multiturn || true
+run_eval "checkpoints/run3_multiturn" "run3_multiturn" "introductory"
 
-# ── Run 4: trajectory credit ablation, 2 epochs ───────────────────────────────
-cp configs/train.yaml configs/runs/run4_traj_credit.yaml
-sed -i 's/credit_type: "step"/credit_type: "trajectory"/' configs/runs/run4_traj_credit.yaml
-sed -i 's/num_epochs: 3/num_epochs: 2/' configs/runs/run4_traj_credit.yaml
+# ── Run 4: trajectory credit ablation, 2 epochs (Algorithmic Q3) ───────────────
+cat << 'CONFIG' > configs/runs/run4_traj_credit.yaml
+num_epochs: 2
+max_turns: 1
+credit_type: "trajectory"
+difficulties: ["introductory"]
+reward_type: "continuous"
+shaped: false
+CONFIG
 run_train "configs/runs/run4_traj_credit.yaml" "run4_traj_credit"
-cp -r checkpoints/final checkpoints/run4_traj_credit
-run_eval "checkpoints/run4_traj_credit" "run4_traj_credit"
+cp -r checkpoints/final checkpoints/run4_traj_credit || true
+run_eval "checkpoints/run4_traj_credit" "run4_traj_credit" "introductory"
 
-# ── Run 5: introductory + interview, 2 epochs (generalization) ───────────────
-cp configs/train.yaml configs/runs/run5_interview.yaml
-sed -i "s/difficulties: \[\"introductory\"\]/difficulties: [\"introductory\", \"interview\"]/" configs/runs/run5_interview.yaml
-sed -i 's/num_epochs: 3/num_epochs: 2/' configs/runs/run5_interview.yaml
-run_train "configs/runs/run5_interview.yaml" "run5_interview"
-cp -r checkpoints/final checkpoints/run5_interview
-run_eval "checkpoints/run5_interview" "run5_interview"
+# ── Run 6: Mixed-Tier Training, 2 epochs (Stronger Generalization Baseline) ───
+cat << 'CONFIG' > configs/runs/run6_mixed_tier.yaml
+num_epochs: 2
+max_turns: 1
+credit_type: "step"
+difficulties: ["introductory", "interview"]
+reward_type: "continuous"
+shaped: false
+CONFIG
+run_train "configs/runs/run6_mixed_tier.yaml" "run6_mixed_tier"
+cp -r checkpoints/final checkpoints/run6_mixed_tier || true
+run_eval "checkpoints/run6_mixed_tier" "run6_mixed_tier" "introductory"
+run_eval "checkpoints/run6_mixed_tier" "run6_mixed_tier" "interview"
 
 log "=== ALL RUNS COMPLETE ==="
-log "Results summary:"
-for f in results/apps_eval_*.json; do
-    python3 -c "
-import json
-with open('$f') as fp:
-    d = json.load(fp)
-s = d['summary']
-print(f\"  {s['tag']}: {s['pass_at_1']:.1%} ({s['solved']}/{s['total']})\")
-" 2>/dev/null
-done
+log "Parsing final results..."
+poetry run python -c "
+import glob, json
+for path in glob.glob('results/apps_eval_*.json'):
+    try:
+        with open(path) as f:
+            d = json.load(f)
+        s = d.get('summary', {})
+        print(f\"  {s.get('tag', 'unknown')}: {s.get('pass_at_1', 0.0):.1%} ({s.get('solved', 0)}/{s.get('total', 0)})\")
+    except Exception as e:
+        print(f'Error reading {path}: {e}')
+" >> logs/overnight.log
