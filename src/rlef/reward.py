@@ -49,7 +49,7 @@ def _run_against_test_cases(
     inputs: list[str],
     outputs: list[str],
     fn_name: str | None,
-    timeout: int = 10,
+    timeout: int = 30,
 ) -> tuple[int, int, list[str]]:
     """
     Run code against all (input, output) pairs from an APPS problem.
@@ -98,9 +98,11 @@ def _run_against_test_cases(
                 error_types.append(err)
         else:
             # for stdin/stdout, compare actual stdout to expected
-            actual = result.stdout.strip()
-            expected = expected_out.strip()
-            if result.success and actual == expected:
+            # compare line by line with per-line stripping
+            # APPS expected outputs often have trailing spaces per line
+            actual_lines = [lo.strip() for lo in result.stdout.strip().splitlines()]
+            expected_lines = [lo.strip() for lo in expected_out.strip().splitlines()]
+            if result.success and actual_lines == expected_lines:
                 passed += 1
             else:
                 err = _classify_error(result)
@@ -138,7 +140,7 @@ def execution_reward(
     fn_name: str | None = None,
     reward_type: Literal["continuous", "binary"] = "continuous",
     shaped: bool = True,
-    timeout: int = 10,
+    timeout: int = 30,
     difficulty: str = "introductory",
 ) -> ExecutionResult:
     """
