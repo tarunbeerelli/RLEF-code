@@ -18,6 +18,9 @@ poetry install
 echo "[4/5] Downloading APPS dataset..."
 bash scripts/download_apps.sh
 
+echo "=== STEP 0.0: RUNNING VERIFICATION SWEEP & DIRECTORY PURGE ==="
+poetry run python clean_and_optimize_dataset.py
+
 echo "[5/5] Smoke test..."
 poetry run python -c "
 import torch

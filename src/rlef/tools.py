@@ -2,27 +2,25 @@
 tools.py — Tool layer for RLEF-Code
 
 Three tools the agent can use during code generation:
-
-  execute(code)        → runs code in E2B sandbox, returns stdout/stderr/error
+  execute(code)        → runs code locally, returns stdout/stderr/error
   lint(code)           → runs ruff on code, returns structured lint feedback
   generate_tests(...)  → prompts the model to write its own test cases
 
 Each tool returns a ToolResult dataclass so the reward function and
 trajectory manager always get a consistent structure regardless of
 which tool was called.
-
-Design note: tools are stateless functions, not a class hierarchy.
-The router (at the bottom) dispatches by name. This keeps it easy
-to add tools later without restructuring.
 """
 
+import json as _json
 import os
 import subprocess
+import sys
 import tempfile
+import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 
-# ── Result types ──────────────────────────────────────────────────────────────
+# ── 1. Result types ──────────────────────────────────────────────────────────
 
 
 class ToolName(str, Enum):
@@ -46,7 +44,7 @@ class ToolResult:
     generated_tests: str = ""
 
 
-# ── Tool 1: Execute ───────────────────────────────────────────────────────────
+# ── 2. Tool 1: Execute ───────────────────────────────────────────────────────────
 
 
 def execute_local(code: str, timeout: int = 10) -> ToolResult:
@@ -54,67 +52,32 @@ def execute_local(code: str, timeout: int = 10) -> ToolResult:
     Run code locally in a subprocess — fallback when E2B is unavailable.
     Only use on trusted code (eval/training on known datasets).
     """
-    import os
-    import subprocess
-    import tempfile
-
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-        f.write(code)
-        tmp = f.name
-
-    try:
-        result = subprocess.run(
-            ["python3", tmp], capture_output=True, text=True, timeout=timeout
-        )
-        stdout = result.stdout
-        stderr = result.stderr
-        error = stderr if result.returncode != 0 else ""
-
-        parts = []
-        if stdout:
-            parts.append(f"stdout:\n{stdout.strip()}")
-        if stderr:
-            parts.append(f"stderr:\n{stderr.strip()}")
-        if not parts:
-            parts.append("(no output)")
-
-        return ToolResult(
-            tool=ToolName.EXECUTE,
-            success=result.returncode == 0,
-            output="\n".join(parts),
-            stdout=stdout,
-            stderr=stderr,
-            error=error,
-        )
-    except subprocess.TimeoutExpired:
-        return ToolResult(
-            tool=ToolName.EXECUTE, success=False, output="Timeout", error="Timeout"
-        )
-    except Exception as e:
-        return ToolResult(
-            tool=ToolName.EXECUTE, success=False, output=str(e), error=str(e)
-        )
-    finally:
-        os.unlink(tmp)
+    return execute(code, timeout=timeout)
 
 
-def execute(code: str, timeout: int = 30) -> ToolResult:
+def execute(code: str, timeout: int = 10) -> ToolResult:
     """
-    Run code locally in a subprocess.
+    Run code locally in a subprocess with cache-busting protections.
     E2B bypassed due to ongoing outage — local execution on Vast.ai machine.
     """
-    import os
-    import subprocess
-    import tempfile
+    # Generate a completely unique filename for EVERY single test case run
+    # This prevents parallel workers or multi-test loops from collision
+    unique_id = uuid.uuid4().hex
+    tmp_filename = f"rlef_sandbox_{unique_id}.py"
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+    with open(tmp_filename, "w", encoding="utf-8") as f:
         f.write(code)
-        tmp = f.name
 
     try:
+        # Use python -B to completely disable caching (.pyc generation)
+        # This keeps distinct task states completely sandbox-isolated
         result = subprocess.run(
-            ["python3", tmp], capture_output=True, text=True, timeout=timeout
+            [sys.executable, "-B", tmp_filename],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
+
         stdout = result.stdout
         stderr = result.stderr
         error = stderr if result.returncode != 0 else ""
@@ -137,30 +100,30 @@ def execute(code: str, timeout: int = 30) -> ToolResult:
         )
     except subprocess.TimeoutExpired:
         return ToolResult(
-            tool=ToolName.EXECUTE, success=False, output="Timeout", error="Timeout"
+            tool=ToolName.EXECUTE,
+            success=False,
+            output="Timeout",
+            error="Timeout: Execution exceeded time limit",
         )
     except Exception as e:
         return ToolResult(
             tool=ToolName.EXECUTE, success=False, output=str(e), error=str(e)
         )
     finally:
-        os.unlink(tmp)
+        if os.path.exists(tmp_filename):
+            try:
+                os.remove(tmp_filename)
+            except OSError:
+                pass
+
+
+# ── 3. Tool 2: Lint ───────────────────────────────────────────────────────────
 
 
 def lint(code: str) -> ToolResult:
     """
     Run ruff on the code and return structured lint feedback.
-
-    Why ruff and not pylint/flake8:
-      - Already a dev dependency (we use it for our own code)
-      - Fastest linter available, no cold start
-      - Output is structured JSON, easy to parse
-
-    The model sees a formatted list of errors with line numbers.
-    If there are no errors, it sees "No lint errors." — a positive
-    signal that syntax is clean before burning an execution call.
     """
-    # write code to a temp file — ruff operates on files
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".py", delete=False, encoding="utf-8"
     ) as f:
@@ -175,15 +138,12 @@ def lint(code: str) -> ToolResult:
             timeout=10,
         )
 
-        # ruff exits 0 = no errors, 1 = errors found, 2 = internal error
         if result.returncode == 2:
             return ToolResult(
                 tool=ToolName.LINT,
                 success=False,
                 output=f"Lint tool error: {result.stderr}",
             )
-
-        import json as _json
 
         try:
             errors = _json.loads(result.stdout) if result.stdout.strip() else []
@@ -198,7 +158,6 @@ def lint(code: str) -> ToolResult:
                 lint_errors=[],
             )
 
-        # Format errors for the model — line number, rule, message
         lines = []
         for e in errors:
             loc = e.get("location", {})
@@ -212,7 +171,7 @@ def lint(code: str) -> ToolResult:
 
         return ToolResult(
             tool=ToolName.LINT,
-            success=True,  # tool ran fine, code just has errors
+            success=True,
             output=output,
             lint_errors=errors,
         )
@@ -224,23 +183,16 @@ def lint(code: str) -> ToolResult:
             output="Lint timed out.",
         )
     finally:
-        os.unlink(tmp_path)
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
-# ── Tool 3: Generate tests ────────────────────────────────────────────────────
+# ── 4. Tool 3: Generate tests ─────────────────────────────────────────────────
 
 
 def generate_tests(problem: str, code: str) -> ToolResult:
     """
     Ask the model to write its own test cases for the problem.
-
-    This is a prompt-based tool — it calls no external service directly.
-    The caller (training loop) injects the model response back.
-    Here we just format the prompt the model should respond to.
-
-    Why this matters: a model that generates good tests understands
-    the problem specification from both sides (implementation + verification).
-    We measure whether test quality correlates with final pass rate.
     """
     prompt = (
         "Write 3 Python assert statements to test the following solution.\n"
@@ -258,7 +210,7 @@ def generate_tests(problem: str, code: str) -> ToolResult:
     )
 
 
-# ── Router ────────────────────────────────────────────────────────────────────
+# ── 5. Router ─────────────────────────────────────────────────────────────────
 
 
 def call_tool(
@@ -271,7 +223,14 @@ def call_tool(
     Dispatch a tool call by name.
     This is what the training loop calls — it never imports tools directly.
     """
-    name = tool_name.strip().lower()
+    try:
+        name = ToolName(tool_name)
+    except ValueError:
+        return ToolResult(
+            tool=ToolName.EXECUTE,
+            success=False,
+            output=f"Unknown tool: '{tool_name}'. Available: execute, lint, generate_tests",
+        )
 
     if name == ToolName.EXECUTE:
         return execute(code, timeout=timeout)
