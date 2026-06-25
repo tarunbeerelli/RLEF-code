@@ -3,9 +3,9 @@ reward.py — Reward functions for RLEF-Code
 
 Three components:
 
-  1. execution_reward(code, problem)
+  1. execution_reward(code, problem, ablation_cfg)
        Runs code against all APPS test cases via sandbox execution.
-       Returns continuous pass rate in.
+       Returns continuous pass rate and applies ablation-controlled dense rewards.
 
   2. shape_reward(raw)
        Applies log shaping to compress the reward range.
@@ -14,15 +14,9 @@ Three components:
   3. assign_step_credit(trajectory, final_reward)
        Discounts the final reward back through trajectory steps
        weighted by how "useful" each tool call was.
-       This is the step-level credit assignment contribution.
 
-Ablation flags:
-  - reward_type: "continuous" | "binary"
-  - shaped:      True | False
-  - credit:      "step" | "trajectory"
-
-All combinations are supported so we can run clean ablations
-without touching the training code.
+  4. normalize_batch_rewards(rewards)
+       Applies Z-score normalization across a batch of generations.
 """
 
 import json
@@ -31,6 +25,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
+import numpy as np
 from rlef.tools import ToolName, ToolResult, execute
 
 # ── 1. Data Structures ────────────────────────────────────────────────────────
@@ -42,7 +37,7 @@ class ExecutionResult:
     total: int
     pass_rate: float
     raw_reward: float  # before shaping
-    final_reward: float  # after shaping (if enabled)
+    final_reward: float  # after shaping/normalization prep
     error_types: list[str]  # SyntaxError, RuntimeError, etc. for analysis
 
 
@@ -114,7 +109,6 @@ def _run_against_test_cases(
 
     # --- BRANCH A: BUNDLED FUNCTION-CALL EVALUATION ENGINE ---
     if use_fn_routing and active_fn_name:
-        # Building the string using clean array lists entirely rules out syntax breaks
         lines = [
             "import json",
             "import sys",
@@ -254,25 +248,14 @@ def _run_against_test_cases(
         else:
             return 0, total_cases, [_classify_error(result)] * total_cases
 
-        match = re.search(r"RLEF_PASSED:\s*(\d+)", result.stdout or "")
-        if match:
-            passed = int(match.group(1))
-            failed_count = total_cases - passed
-            error_types = ["WrongOutput"] * failed_count if failed_count > 0 else []
-            return passed, total_cases, error_types
-        else:
-            return 0, total_cases, [_classify_error(result)] * total_cases
-
 
 def _classify_error(result: ToolResult) -> str:
     """Classify the error type for analysis notebooks."""
     if not result.error:
-        # If there is no stderr but success=False, it was killed by a system timeout signal
         return "Timeout"
 
     error_str = result.error.lower()
     if "syntaxerror" in error_str:
-        # Code structure cannot be compiled
         return "SyntaxError"
     if "timeout" in error_str or "timed out" in error_str:
         return "Timeout"
@@ -285,7 +268,6 @@ def _classify_error(result: ToolResult) -> str:
     if "valueerror" in error_str:
         return "ValueError"
 
-    # Catch-all for other unhandled exceptions
     return "RuntimeError"
 
 
@@ -304,11 +286,22 @@ def execution_reward(
     inputs: list[str],
     outputs: list[str],
     fn_name: str | None = None,
-    # Remove shaped: bool = True
     timeout: int = 10,
     difficulty: str = "introductory",
-    current_turn: int = 1,  # Add this
+    current_turn: int = 1,
+    ablation_cfg: dict | None = None,
 ) -> ExecutionResult:
+    """
+    Calculates granular code rewards using explicit research ablation toggles.
+    """
+    if ablation_cfg is None:
+        ablation_cfg = {
+            "use_lint_bonus": True,
+            "use_step_credit": True,
+            "use_multi_turn": True,
+            "use_log_reward": False,
+        }
+
     if isinstance(code, list):
         code = code[0]
     if not inputs or not code:
@@ -318,40 +311,48 @@ def execution_reward(
         code, inputs, outputs, fn_name, timeout
     )
 
-    # 1. Linear Gradient: Reward is strictly proportional to pass rate (0.0 to 1.0)
     pass_rate = passed / total if total > 0 else 0.0
-
-    # 2. Base Linear Reward
-    # Even if pass_rate is 0.05, the reward is 0.05.
-    # This keeps the gradient alive for the model.
     base_reward = pass_rate
 
-    # 3. Positive-Only Step/Partial Reward (The "Breadcrumb")
-    # If the model passes at least 1 test case but not all, give it a
-    # "progress bonus". This distinguishes a total failure (0.0)
-    # from a "found a potential solution" (0.15).
-    progress_bonus = 0.15 if 0.0 < pass_rate < 1.0 else 0.0
+    # Toggle: Lint / Syntax Scaffolding
+    compile_bonus = 0.0
+    error_penalty = 0.0
+    if ablation_cfg.get("use_lint_bonus", True):
+        compile_bonus = 0.05 if "SyntaxError" not in error_types else 0.0
+        error_penalty = -0.01 if "SyntaxError" in error_types else 0.0
 
-    # 4. Add Penalty for Turn-Efficiency:
-    # We want it to solve it as fast as possible.
-    # A small penalty per turn ensures the model prefers Turn 1 over Turn 3.
-    turn_penalty = (current_turn - 1) * 0.05
+    # Toggle: Step-wise Partial Progress
+    progress_bonus = 0.0
+    if ablation_cfg.get("use_step_credit", True):
+        progress_bonus = 0.15 if 0.0 < pass_rate < 1.0 else 0.0
 
-    # 5. Compile Bonus: Reward for producing parsable code
-    # This is a positive nudge. The model now "wants" to write valid code.
-    compile_bonus = 0.05 if "SyntaxError" not in error_types else 0.0
-    error_penalty = -0.01 if "SyntaxError" in error_types else 0.0
+    # Toggle: Multi-Turn Turn Efficiency Penalty
+    turn_penalty = 0.0
+    if ablation_cfg.get("use_multi_turn", True):
+        turn_penalty = (current_turn - 1) * 0.05
 
     final_reward = (
         base_reward + progress_bonus + compile_bonus + error_penalty - turn_penalty
     )
 
+    difficulty_scales = {"introductory": 1.0, "interview": 1.2, "competition": 1.5}
+    final_reward *= difficulty_scales.get(difficulty, 1.0)
+
+    # Ensure non-negative before applying log shapes
+    final_reward = max(0.0, final_reward)
+
+    # Toggle: Log Shaping
+    if ablation_cfg.get("use_log_reward", False):
+        # Cap at 1.0 to respect the shape_reward assertion limits
+        capped_reward = min(1.0, final_reward)
+        final_reward = shape_reward(capped_reward)
+
     return ExecutionResult(
         passed=passed,
         total=total,
         pass_rate=pass_rate,
-        raw_reward=final_reward,
-        final_reward=max(0.0, final_reward),  # Ensure non-negative
+        raw_reward=base_reward,  # Preserve pure pass_rate as raw metric
+        final_reward=final_reward,
         error_types=error_types,
     )
 
@@ -362,18 +363,8 @@ def execution_reward(
 def shape_reward(raw: float) -> float:
     """
     Log-shape a reward value from [0, 1] →.
-
-    f(r) = log(1 + r * (e - 1))
-
-    Properties:
-      f(0.0) = 0.0   (zero stays zero)
-      f(1.0) = 1.0   (perfect stays perfect)
-    The curve compresses high rewards and expands low ones.
-    This makes early training more stable — going from 0.1 to 0.2
-    produces a larger gradient update than going from 0.8 to 0.9,
-    which is exactly what we want when the model is just starting out.
     """
-    assert 0.0 <= raw <= 1.0, f"reward must be in, got {raw}"
+    assert 0.0 <= raw <= 1.0, f"reward must be in [0, 1], got {raw}"
     return math.log1p(raw * (math.e - 1))
 
 
@@ -381,23 +372,7 @@ def shape_reward(raw: float) -> float:
 
 
 def _step_utility(tool_result: ToolResult) -> tuple[bool, str]:
-    """
-    Judge whether a tool call was useful.
-
-    A step is useful if it produced information that could guide
-    the next action. The heuristic:
-
-      execute: useful if it ran without sandbox error
-               (even wrong output is useful — it tells the model what to fix)
-               not useful if it was a pure timeout or sandbox crash
-
-      lint:    useful if it found errors (fixed a real problem)
-               not useful if code was already clean (redundant call)
-
-      tests:   always useful — generating tests always adds information
-    """
     if tool_result.tool == ToolName.EXECUTE:
-        # sandbox crash = not useful; wrong output or runtime error = useful
         if tool_result.output and "Sandbox error" in tool_result.output:
             return False, "sandbox crash"
         return True, "execution produced feedback"
@@ -419,44 +394,18 @@ def assign_step_credit(
     gamma: float = 0.9,
     credit_type: Literal["step", "trajectory"] = "step",
 ) -> list[StepCredit]:
-    """
-    Assign credit to each step in a trajectory.
-
-    trajectory mode: every step gets the same final_reward.
-                     This is standard GRPO — no step-level signal.
-
-    step mode:       useful steps get discounted final_reward,
-                     useless steps get a small penalty.
-                     Discount factor gamma means later steps get
-                     less credit than earlier ones that enabled them.
-
-    Args:
-        tool_results:  ordered list of ToolResults from one episode
-        final_reward:  the outcome reward (from execution_reward)
-        gamma:         discount factor for temporal credit
-        credit_type:   "step" or "trajectory"
-    """
     credits = []
 
     for i, result in enumerate(tool_results):
         if credit_type == "trajectory":
-            # baseline: every step gets identical credit
             credit = final_reward
             useful = True
             reason = "trajectory-level (no step signal)"
-
         else:
-            # step-level: discount by position and utility
             useful, reason = _step_utility(result)
-
             if useful:
-                # earlier useful steps get more credit (they enabled later ones)
-                # gamma^i means step 0 gets full discount, step 1 gets gamma, etc.
                 credit = final_reward * (gamma**i)
             else:
-                # useless steps get a small negative signal
-                # -0.05 is enough to discourage redundant calls without
-                # destabilising training
                 credit = -0.05
 
         credits.append(
@@ -470,3 +419,29 @@ def assign_step_credit(
         )
 
     return credits
+
+
+# ── 6. Batch Normalization ────────────────────────────────────────────────────
+
+
+def normalize_batch_rewards(
+    rewards: list[float], use_normalization: bool = True
+) -> list[float]:
+    """
+    Toggle: Z-Score Batch Normalization.
+    Takes a list of rewards across a generation batch and normalizes them.
+    Used in train.py just before advantage calculation.
+    """
+    if not use_normalization or len(rewards) <= 1:
+        return rewards
+
+    arr = np.array(rewards, dtype=np.float32)
+    mean = np.mean(arr)
+    std = np.std(arr)
+
+    # Prevent divide by zero if std dev is zero
+    if std < 1e-8:
+        return [0.0] * len(rewards)
+
+    normalized = (arr - mean) / std
+    return normalized.tolist()

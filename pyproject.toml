@@ -29,6 +29,7 @@ wandb = "^0.27.2"
 regex = "^2026.5.9"
 reportlab = "^5.0.0"
 jupytext = "^1.19.4"
+peft = "^0.19.1"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"
