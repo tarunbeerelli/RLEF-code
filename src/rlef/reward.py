@@ -56,8 +56,6 @@ class StepCredit:
 
 
 # ── 2. Execution Reward Internal Pipeline ─────────────────────────────────────
-
-
 def _run_against_test_cases(
     code: str,
     inputs: list[str] | str,
@@ -66,21 +64,22 @@ def _run_against_test_cases(
     timeout: int = 10,
 ) -> tuple[int, int, list[str]]:
     """
-    Pristine Isolated APPS Evaluation Engine. Uses deep dictionary frame
-    sandboxing to completely eliminate global namespace pollution.
+    Subprocess-Isolated APPS Evaluation Engine. Packs execution environments
+    entirely inside isolated subprocess runs to honor timeout bounds perfectly
+    and prevent distributed master GPU thread hangs.
     """
 
     # --- DEFENSIVE DATA UNBOXING ---
     if isinstance(inputs, str):
         try:
             inputs = json.loads(inputs)
-        except Exception:  # <--- FIXED: Explicitly catch Exception
+        except Exception:
             inputs = [inputs]
 
     if isinstance(outputs, str):
         try:
             outputs = json.loads(outputs)
-        except Exception:  # <--- FIXED: Explicitly catch Exception
+        except Exception:
             outputs = [outputs]
 
     inputs = [str(x) for x in inputs]
@@ -105,75 +104,85 @@ def _run_against_test_cases(
             parsed_first = json.loads(inputs[0])
             if isinstance(parsed_first, (list, dict)):
                 is_json_list = True
-        except Exception:  # <--- FIXED: Explicitly catch Exception
+        except Exception:
             pass
 
     use_fn_routing = bool(fn_name) or (is_json_list and len(discovered_fns) > 0)
     active_fn_name = (
-        fn_name if fn_name else (discovered_fns if discovered_fns else None)
+        fn_name if fn_name else (discovered_fns[0] if discovered_fns else None)
     )
 
     # --- BRANCH A: BUNDLED FUNCTION-CALL EVALUATION ENGINE ---
     if use_fn_routing and active_fn_name:
-        # BUNDLED FUNCTION-CALL EVALUATION ENGINE
-        test_code = (
-            f"import json\n"
-            f"import sys\n"
-            f"sys.setrecursionlimit(200000)\n\n"
-            f"user_code = {repr(code)}\n"
-            f"sandbox_globals = {{'json': json, 'sys': sys, 'globals': globals, 'locals': locals, 'isinstance': isinstance, 'str': str, 'getattr': getattr, 'print': print}}\n\n"
-            f"try:\n"
-            f"    exec(user_code, sandbox_globals)\n"
-            f"except Exception as exec_err:\n"  # <--- FIXED
-            f"    print(f'EXEC_CRASH: {{exec_err}}')\n"
-            f"    sys.exit(0)\n\n"
-            f"def run_all_tests():\n"
-            f"    all_inputs = {repr(inputs)}\n"
-            f"    all_outputs = {repr(outputs)}\n"
-            f"    passed = 0\n"
-            f"    \n"
-            f"    for inp, expected_out in zip(all_inputs, all_outputs):\n"
-            f"        try:\n"
-            f"            raw_inp = json.loads(inp)\n"
-            f"        except Exception:\n"  # <--- FIXED
-            f"            raw_inp = inp\n"
-            f"        try:\n"
-            f"            expected = json.loads(expected_out)\n"
-            f"        except Exception:\n"  # <--- FIXED
-            f"            expected = expected_out\n"
-            f"            \n"
-            f"        args = raw_inp if isinstance(raw_inp, list) else [raw_inp]\n"
-            f"        res = None\n"
-            f"        try:\n"
-            f"            if 'Solution' in sandbox_globals:\n"
-            f"                try:\n"
-            f"                    obj = sandbox_globals['Solution']()\n"
-            f"                    res = getattr(obj, '{active_fn_name}')(*args)\n"
-            f"                except Exception:\n"  # <--- FIXED
-            f"                    try: res = sandbox_globals['{active_fn_name}'](*args)\n"
-            f"                    except Exception: res = getattr(sandbox_globals['Solution'], '{active_fn_name}')(sandbox_globals['Solution'](), *args)\n"  # <--- FIXED
-            f"            else:\n"
-            f"                res = sandbox_globals['{active_fn_name}'](*args)\n"
-            f"                \n"
-            f"            str_res = str(res).strip().lower()\n"
-            f"            str_exp = str(expected).strip().lower()\n"
-            f"            if res == expected or str_res == str_exp:\n"
-            f"                passed += 1\n"
-            f"            elif (str_res == 'true' and str_exp == '1') or (str_res == '1' and str_exp == 'true'):\n"
-            f"                passed += 1\n"
-            f"            elif (str_res == 'false' and str_exp == '0') or (str_res == '0' and str_exp == 'false'):\n"
-            f"                passed += 1\n"
-            f"        except Exception:\n"  # <--- FIXED
-            f"            continue\n"
-            f"    print(f'RLEF_PASSED: {{passed}}')\n"
-            f"run_all_tests()\n"
-        )
+        # Building the string using clean array lists entirely rules out syntax breaks
+        lines = [
+            "import json",
+            "import sys",
+            "sys.setrecursionlimit(200000)\n",
+            "user_code = " + repr(code),
+            "sandbox_globals = {'json': json, 'sys': sys, 'globals': globals, 'locals': locals, 'isinstance': isinstance, 'str': str, 'getattr': getattr, 'print': print}\n",
+            "try:",
+            "    exec(user_code, sandbox_globals)",
+            "except Exception as exec_err:",
+            "    print(f'EXEC_CRASH: {exec_err}')",
+            "    sys.exit(0)\n",
+            "def run_all_tests():",
+            "    all_inputs = " + repr(inputs),
+            "    all_outputs = " + repr(outputs),
+            "    passed = 0",
+            "    ",
+            "    for inp, expected_out in zip(all_inputs, all_outputs):",
+            "        try:",
+            "            raw_inp = json.loads(inp)",
+            "        except Exception:",
+            "            raw_inp = inp",
+            "        try:",
+            "            expected = json.loads(expected_out)",
+            "        except Exception:",
+            "            expected = expected_out",
+            "            ",
+            "        args = raw_inp if isinstance(raw_inp, list) else [raw_inp]",
+            "        res = None",
+            "        try:",
+            "            if 'Solution' in sandbox_globals:",
+            "                try:",
+            "                    obj = sandbox_globals['Solution']()",
+            "                    res = getattr(obj, '"
+            + str(active_fn_name)
+            + "')(*args)",
+            "                except Exception:",
+            "                    try:",
+            "                        res = sandbox_globals['"
+            + str(active_fn_name)
+            + "'](*args)",
+            "                    except Exception:",
+            "                        res = getattr(sandbox_globals['Solution'], '"
+            + str(active_fn_name)
+            + "')(sandbox_globals['Solution'](), *args)",
+            "            else:",
+            "                res = sandbox_globals['"
+            + str(active_fn_name)
+            + "'](*args)",
+            "                ",
+            "            str_res = str(res).strip().lower()",
+            "            str_exp = str(expected).strip().lower()",
+            "            if res == expected or str_res == str_exp:",
+            "                passed += 1",
+            "            elif (str_res == 'true' and str_exp == '1') or (str_res == '1' and str_exp == 'true'):",
+            "                passed += 1",
+            "            elif (str_res == 'false' and str_exp == '0') or (str_res == '0' and str_exp == 'false'):",
+            "                passed += 1",
+            "        except Exception:",
+            "            continue",
+            "    print(f'RLEF_PASSED: {passed}')",
+            "run_all_tests()",
+        ]
+        test_code = "\n".join(lines) + "\n"
 
         result = execute(test_code, timeout=timeout)
         if not result.success:
             return 0, total_cases, [_classify_error(result)] * total_cases
 
-            # Inside the trailing execution return logic:
         match = re.search(r"RLEF_PASSED:\s*(\d+)", result.stdout or "")
         if match:
             passed = int(match.group(1))
@@ -185,57 +194,74 @@ def _run_against_test_cases(
                 return 0, total_cases, ["SyntaxError"] * total_cases
             return 0, total_cases, [_classify_error(result)] * total_cases
 
-    # --- BRANCH B: ISOLATED STDIN/STDOUT SEQUENCE ENVIRONMENT ---
+    # --- BRANCH B: BUNDLED STDIN/STDOUT BATCH ENGINE WITH SUBPROCESS ISOLATION ---
     else:
-        # BUNDLED STDIN/STDOUT BATCH ENGINE
-        passed = 0
-        error_types = []
+        lines = [
+            "import builtins",
+            "import sys",
+            "import io",
+            "sys.setrecursionlimit(200000)\n",
+            "user_code = " + repr(code),
+            "all_inputs = " + repr(inputs),
+            "all_outputs = " + repr(outputs),
+            "passed_count = 0\n",
+            "for inp, expected_out in zip(all_inputs, all_outputs):",
+            "    sys.stdin = io.StringIO(str(inp) + '\\n')",
+            "    _real_readline = sys.stdin.readline",
+            "    sys.stdin.readline = lambda *a, **kw: _real_readline(*a, **kw) or '\\n'",
+            "    builtins.input = lambda *a, **kw: sys.stdin.readline().rstrip()",
+            "    ",
+            "    old_stdout = sys.stdout",
+            "    sys.stdout = captured = io.StringIO()",
+            "    ",
+            "    sandbox_globals = {'sys': sys, 'io': io, 'builtins': builtins, 'print': print}",
+            "    try:",
+            "        exec(user_code, sandbox_globals)",
+            "        if 'main' in sandbox_globals: sandbox_globals['main']()",
+            "        elif 'solve' in sandbox_globals: sandbox_globals['solve']()",
+            "    except Exception:",
+            "        sys.stdout = old_stdout",
+            "        continue",
+            "        ",
+            "    sys.stdout = old_stdout",
+            "    actual_tokens = captured.getvalue().strip().split()",
+            "    expected_tokens = expected_out.strip().split()",
+            "    ",
+            "    if actual_tokens == expected_tokens:",
+            "        passed_count += 1",
+            "    else:",
+            "        try:",
+            "            act_floats = [round(float(x), 3) for x in actual_tokens]",
+            "            exp_floats = [round(float(x), 3) for x in expected_tokens]",
+            "            if act_floats == exp_floats and len(act_floats) > 0:",
+            "                passed_count += 1",
+            "        except Exception:",
+            "            pass",
+            "print(f'RLEF_PASSED: {passed_count}')",
+        ]
+        test_code = "\n".join(lines) + "\n"
 
-        for inp, expected_out in zip(inputs, outputs):
-            test_code = (
-                f"import builtins\n"
-                f"import sys\n"
-                f"import io\n"
-                f"sys.setrecursionlimit(200000)\n"
-                f"sys.stdin = io.StringIO({repr(inp)} + '\\n')\n"
-                f"_real_readline = sys.stdin.readline\n"
-                f"def _safe_readline(*args, **kwargs):\n"
-                f"    line = _real_readline(*args, **kwargs)\n"
-                f"    return line if line else '\\n'\n"
-                f"sys.stdin.readline = _safe_readline\n"
-                f"builtins.input = lambda *a, **kw: sys.stdin.readline().rstrip()\n\n"
-                f"user_code = {repr(code)}\n"
-                f"sandbox_globals = {{'sys': sys, 'io': io, 'builtins': builtins, 'print': print}}\n"
-                f"try:\n"
-                f"    exec(user_code, sandbox_globals)\n"
-                f"    if 'main' in sandbox_globals: sandbox_globals['main']()\n"
-                f"    elif 'solve' in sandbox_globals: sandbox_globals['solve']()\n"
-                f"except Exception:\n"  # <--- FIXED
-                f"    sys.exit(1)\n"
-            )
+        result = execute(test_code, timeout=timeout)
+        if not result.success:
+            return 0, total_cases, [_classify_error(result)] * total_cases
 
-            result = execute(test_code, timeout=timeout)
-            if not result.success:
-                error_types.append(_classify_error(result))
-                continue
+        match = re.search(r"RLEF_PASSED:\s*(\d+)", result.stdout or "")
+        if match:
+            passed = int(match.group(1))
+            failed_count = total_cases - passed
+            error_types = ["WrongOutput"] * failed_count if failed_count > 0 else []
+            return passed, total_cases, error_types
+        else:
+            return 0, total_cases, [_classify_error(result)] * total_cases
 
-            actual_tokens = (result.stdout or "").strip().split()
-            expected_tokens = expected_out.strip().split()
-
-            if actual_tokens == expected_tokens:
-                passed += 1
-            else:
-                try:
-                    act_floats = [round(float(x), 3) for x in actual_tokens]
-                    exp_floats = [round(float(x), 3) for x in expected_tokens]
-                    if act_floats == exp_floats and len(act_floats) > 0:
-                        passed += 1
-                    else:
-                        error_types.append("WrongOutput")
-                except Exception:  # <--- FIXED (Changed from ValueError to Exception for linter alignment)
-                    error_types.append("WrongOutput")
-
-        return passed, total_cases, error_types
+        match = re.search(r"RLEF_PASSED:\s*(\d+)", result.stdout or "")
+        if match:
+            passed = int(match.group(1))
+            failed_count = total_cases - passed
+            error_types = ["WrongOutput"] * failed_count if failed_count > 0 else []
+            return passed, total_cases, error_types
+        else:
+            return 0, total_cases, [_classify_error(result)] * total_cases
 
 
 def _classify_error(result: ToolResult) -> str:
