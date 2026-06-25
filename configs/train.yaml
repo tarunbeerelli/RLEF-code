@@ -9,6 +9,7 @@ credit_type: "step"
 num_generations: 8
 temperature: 0.9
 kl_coef: 0.05
+entropy_coef: 0.1
 max_prompt_length: 1024
 max_new_tokens: 256
 learning_rate: 0.00001

@@ -174,6 +174,7 @@ def make_reward_fn(cfg: dict):
                     fn_name=fn,
                     reward_type=reward_type,
                     shaped=shaped,
+                    current_turn=1,
                     difficulty=kwargs.get("difficulty", ["introductory"])[i]
                     if kwargs.get("difficulty")
                     else "introductory",
@@ -262,6 +263,7 @@ def _replay_trajectory(
     # each turn starts with a <tool> tag
     turn_texts = re.split(r"(?=<tool>)", completion)
     turn_texts = [t.strip() for t in turn_texts if t.strip()]
+    turn_counter = 1
 
     for turn_text in turn_texts[:max_turns]:
         if traj.is_done:
@@ -282,9 +284,11 @@ def _replay_trajectory(
                 fn_name=fn_name,
                 reward_type=reward_type,
                 shaped=shaped,
+                current_turn=turn_counter,
             )
 
         traj.add_turn(parsed, tool_result, exec_result)
+        turn_counter += 1
 
     return traj
 
@@ -350,20 +354,21 @@ def main():
 
     # ── GRPO config ───────────────────────────────────────────────────────────
     grpo_config = GRPOConfig(
-        num_generations=cfg["num_generations"],
-        temperature=cfg["temperature"],
-        max_completion_length=cfg["max_new_tokens"],
-        beta=cfg["kl_coef"],
-        output_dir=cfg["output_dir"],
-        num_train_epochs=cfg["num_epochs"],
-        per_device_train_batch_size=cfg["per_device_batch"],
-        gradient_accumulation_steps=cfg["gradient_accumulation_steps"],
-        learning_rate=cfg["learning_rate"],
+        num_generations=cfg.get("num_generations", 8),
+        temperature=cfg.get("temperature", 0.9),
+        max_completion_length=cfg.get("max_new_tokens", 512),
+        output_dir=cfg.get("output_dir", "./results"),
+        num_train_epochs=cfg.get("num_epochs", 1),
+        per_device_train_batch_size=cfg.get("per_device_batch", 1),
+        gradient_accumulation_steps=cfg.get("gradient_accumulation_steps", 1),
+        learning_rate=cfg.get("learning_rate", 5e-6),
+        beta=cfg.get("kl_coef", 0.05),  # Set your intended default here
+        entropy_coef=cfg.get("entropy_coef", 0.1),  # Set your intended default here
         lr_scheduler_type="cosine",
         warmup_ratio=0.05,
-        bf16=cfg["bf16"],
-        logging_steps=cfg["logging_steps"],
-        save_steps=cfg["save_steps"],
+        bf16=cfg.get("bf16", True),
+        logging_steps=cfg.get("logging_steps", 10),
+        save_steps=cfg.get("save_steps", 100),
         report_to="wandb" if is_main else "none",
         remove_unused_columns=False,
         dataloader_num_workers=2,

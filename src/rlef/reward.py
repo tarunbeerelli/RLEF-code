@@ -304,44 +304,54 @@ def execution_reward(
     inputs: list[str],
     outputs: list[str],
     fn_name: str | None = None,
-    reward_type: Literal["continuous", "binary"] = "continuous",
-    shaped: bool = True,
+    # Remove shaped: bool = True
     timeout: int = 10,
     difficulty: str = "introductory",
+    current_turn: int = 1,  # Add this
 ) -> ExecutionResult:
-    """
-    Main reward function. Runs code against ALL test cases present
-    in the dataset without slicing truncation to maintain true data alignment.
-    """
-    # Defensive guard rail for lists passed as code blocks
     if isinstance(code, list):
-        code = code[0] if len(code) > 0 else ""
-
+        code = code[0]
     if not inputs or not code:
         return ExecutionResult(0, 0, 0.0, 0.0, 0.0, [])
 
-    # Evaluate against ALL test cases natively
     passed, total, error_types = _run_against_test_cases(
         code, inputs, outputs, fn_name, timeout
     )
 
+    # 1. Linear Gradient: Reward is strictly proportional to pass rate (0.0 to 1.0)
     pass_rate = passed / total if total > 0 else 0.0
 
-    # Raw reward calculation
-    if reward_type == "binary":
-        raw = 1.0 if passed == total else 0.0
-    else:
-        raw = pass_rate
+    # 2. Base Linear Reward
+    # Even if pass_rate is 0.05, the reward is 0.05.
+    # This keeps the gradient alive for the model.
+    base_reward = pass_rate
 
-    # Apply log shaping if enabled
-    final = shape_reward(raw) if shaped else raw
+    # 3. Positive-Only Step/Partial Reward (The "Breadcrumb")
+    # If the model passes at least 1 test case but not all, give it a
+    # "progress bonus". This distinguishes a total failure (0.0)
+    # from a "found a potential solution" (0.15).
+    progress_bonus = 0.15 if 0.0 < pass_rate < 1.0 else 0.0
+
+    # 4. Add Penalty for Turn-Efficiency:
+    # We want it to solve it as fast as possible.
+    # A small penalty per turn ensures the model prefers Turn 1 over Turn 3.
+    turn_penalty = (current_turn - 1) * 0.05
+
+    # 5. Compile Bonus: Reward for producing parsable code
+    # This is a positive nudge. The model now "wants" to write valid code.
+    compile_bonus = 0.05 if "SyntaxError" not in error_types else 0.0
+    error_penalty = -0.01 if "SyntaxError" in error_types else 0.0
+
+    final_reward = (
+        base_reward + progress_bonus + compile_bonus + error_penalty - turn_penalty
+    )
 
     return ExecutionResult(
         passed=passed,
         total=total,
         pass_rate=pass_rate,
-        raw_reward=raw,
-        final_reward=final,
+        raw_reward=final_reward,
+        final_reward=max(0.0, final_reward),  # Ensure non-negative
         error_types=error_types,
     )
 
