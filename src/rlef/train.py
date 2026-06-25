@@ -16,11 +16,7 @@ Multi-turn mode (max_turns=N):
 DDP: accelerate handles multi-GPU. Run with:
   accelerate launch --config_file accelerate_config.yaml src/rlef/train.py
 
-Ablations: set in configs/train.yaml
-  reward_type: continuous | binary
-  shaped:      true | false
-  credit_type: step | trajectory
-  max_turns:   1 | 3
+Ablations: set in configs/train.yaml under the `ablation:` dictionary
 """
 
 import argparse
@@ -32,6 +28,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+import numpy as np
 import torch
 import wandb
 import yaml
@@ -40,7 +37,7 @@ from datasets import Dataset
 from peft import LoraConfig, TaskType, get_peft_model
 from rlef.data import APPSProblem, difficulty_split, load_apps_split
 from rlef.prompt import format_prompt, parse_output
-from rlef.reward import execution_reward
+from rlef.reward import execution_reward, normalize_batch_rewards
 from rlef.tools import call_tool
 from rlef.trajectory import Trajectory
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -64,13 +61,6 @@ def prepare_dataset(
 ) -> Dataset:
     """
     Convert APPSProblem list into a HuggingFace Dataset.
-
-    GRPOTrainer expects each example to have a "prompt" field
-    containing the tokenized prompt. We also store problem metadata
-    as extra columns so the reward function can access test cases.
-
-    The reward function receives these columns as kwargs — this is
-    how GRPO passes context from the dataset to the reward fn.
     """
     rows = []
     for p in problems:
@@ -107,7 +97,6 @@ def stratified_sample(
 ) -> list[APPSProblem]:
     """
     Sample n problems with equal representation from each difficulty tier.
-    This prevents the model from exploiting easy problems for cheap reward.
     """
     buckets = difficulty_split(problems)
     per_bucket = n // len(buckets)
@@ -125,16 +114,9 @@ def stratified_sample(
 def make_reward_fn(cfg: dict):
     """
     Returns the reward function GRPOTrainer calls after each generation.
-
-    GRPOTrainer signature:
-      reward_fn(completions, prompts, **dataset_columns) -> list[float]
-
-    completions:     list of model-generated strings (one per rollout)
-    dataset_columns: anything stored in the dataset is passed as kwargs
-                     — this is how we get inputs/outputs/fn_name per problem
     """
-    reward_type = cfg.get("reward_type", "continuous")
-    shaped = cfg.get("shaped", True)
+    # Extract the ablation dictionary
+    ablation_cfg = cfg.get("ablation", {})
     max_turns = cfg.get("max_turns", 1)
     credit_type = cfg.get("credit_type", "step")
 
@@ -172,11 +154,11 @@ def make_reward_fn(cfg: dict):
                     inputs=inp,
                     outputs=out,
                     fn_name=fn,
-                    reward_type=reward_type,
-                    shaped=shaped,
+                    current_turn=1,
                     difficulty=kwargs.get("difficulty", ["introductory"])[i]
                     if kwargs.get("difficulty")
                     else "introductory",
+                    ablation_cfg=ablation_cfg,  # Pass ablations here
                 )
                 rewards.append(result.final_reward)
 
@@ -196,25 +178,31 @@ def make_reward_fn(cfg: dict):
 
             else:
                 # ── Multi-turn: run trajectory ────────────────────────────
-                # Note: in GRPO the full trajectory is one "completion"
-                # We replay it here to compute the reward
-                # The model already generated all turns — we just score them
                 traj = _replay_trajectory(
                     completion=completion,
                     inputs=inp,
                     outputs=out,
                     fn_name=fn,
                     max_turns=max_turns,
-                    reward_type=reward_type,
-                    shaped=shaped,
                     credit_type=credit_type,
+                    ablation_cfg=ablation_cfg,  # Pass ablations here
                 )
                 rewards.append(traj.final_reward)
 
                 if wandb.run:
                     wandb.log(traj.to_log_dict())
 
-        return rewards
+        # ── Ablation: Normalization ───────────────────────────────────────────
+        use_norm = ablation_cfg.get("use_normalization", True)
+        normalized_rewards = normalize_batch_rewards(
+            rewards, use_normalization=use_norm
+        )
+
+        # FINAL SAFETY CLAMP:
+        # Clip the advantage to +/- 2.0 standard deviations
+        # This prevents "runaway" updates while keeping the relative signal.
+        clipped_rewards = np.clip(normalized_rewards, -2.0, 2.0)
+        return clipped_rewards.tolist()
 
     return reward_fn
 
@@ -225,16 +213,11 @@ def _replay_trajectory(
     outputs: list[str],
     fn_name: str | None,
     max_turns: int,
-    reward_type: str,
-    shaped: bool,
     credit_type: str,
+    ablation_cfg: dict,
 ) -> Trajectory:
     """
     Replay a multi-turn completion to compute the reward.
-
-    In multi-turn GRPO the model generates the full trajectory as
-    one completion string. We split it by turns, execute each tool
-    call, and return the final trajectory with reward assigned.
     """
     from rlef.data import APPSProblem as _P
 
@@ -253,15 +236,14 @@ def _replay_trajectory(
     traj = Trajectory(
         problem=dummy,
         max_turns=max_turns,
-        reward_type=reward_type,
-        shaped=shaped,
+        reward_type="continuous",  # Fallbacks for trajectory.py backwards compatibility
+        shaped=False,  # Fallbacks for trajectory.py backwards compatibility
         credit_type=credit_type,
     )
 
-    # split completion into turns by the <tool> tag
-    # each turn starts with a <tool> tag
     turn_texts = re.split(r"(?=<tool>)", completion)
     turn_texts = [t.strip() for t in turn_texts if t.strip()]
+    turn_counter = 1
 
     for turn_text in turn_texts[:max_turns]:
         if traj.is_done:
@@ -280,11 +262,12 @@ def _replay_trajectory(
                 inputs=inputs,
                 outputs=outputs,
                 fn_name=fn_name,
-                reward_type=reward_type,
-                shaped=shaped,
+                current_turn=turn_counter,
+                ablation_cfg=ablation_cfg,  # Apply ablations per turn
             )
 
         traj.add_turn(parsed, tool_result, exec_result)
+        turn_counter += 1
 
     return traj
 
@@ -302,10 +285,19 @@ def main():
     is_main = accelerator.is_main_process
 
     if is_main:
-        wandb.init(project=cfg["wandb_project"], config=cfg)
+        # Added entity support so it maps correctly to your tarunbeerelli workspace
+        wandb.init(
+            project=cfg["wandb_project"], entity=cfg.get("wandb_entity"), config=cfg
+        )
         print(f"Training on {accelerator.num_processes} GPUs")
         print(f"Model: {cfg['model_name']}")
         print(f"Mode: {'multi-turn' if cfg['max_turns'] > 1 else 'single-turn'}")
+
+        # Log active ablations to console for sanity checking
+        ablation_cfg = cfg.get("ablation", {})
+        print(
+            f"Active Ablations: {ablation_cfg if ablation_cfg else 'None (Using Defaults)'}"
+        )
 
     # ── Load tokenizer ────────────────────────────────────────────────────────
     tokenizer = AutoTokenizer.from_pretrained(cfg["model_name"], trust_remote_code=True)
@@ -321,7 +313,6 @@ def main():
     )
 
     # LoRA — only train adapter weights (~0.5% of params)
-    # keeps optimizer states tiny, fits in 48GB with DDP
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         r=16,
@@ -350,20 +341,21 @@ def main():
 
     # ── GRPO config ───────────────────────────────────────────────────────────
     grpo_config = GRPOConfig(
-        num_generations=cfg["num_generations"],
-        temperature=cfg["temperature"],
-        max_completion_length=cfg["max_new_tokens"],
-        beta=cfg["kl_coef"],
-        output_dir=cfg["output_dir"],
-        num_train_epochs=cfg["num_epochs"],
-        per_device_train_batch_size=cfg["per_device_batch"],
-        gradient_accumulation_steps=cfg["gradient_accumulation_steps"],
-        learning_rate=cfg["learning_rate"],
+        num_generations=cfg.get("num_generations", 8),
+        temperature=cfg.get("temperature", 0.9),
+        max_completion_length=cfg.get("max_new_tokens", 512),
+        output_dir=cfg.get("output_dir", "./results"),
+        num_train_epochs=cfg.get("num_epochs", 1),
+        per_device_train_batch_size=cfg.get("per_device_batch", 1),
+        gradient_accumulation_steps=cfg.get("gradient_accumulation_steps", 1),
+        learning_rate=cfg.get("learning_rate", 5e-6),
+        beta=cfg.get("kl_coef", 0.05),
+        entropy_coef=cfg.get("entropy_coef", 0.1),
         lr_scheduler_type="cosine",
         warmup_ratio=0.05,
-        bf16=cfg["bf16"],
-        logging_steps=cfg["logging_steps"],
-        save_steps=cfg["save_steps"],
+        bf16=cfg.get("bf16", True),
+        logging_steps=cfg.get("logging_steps", 10),
+        save_steps=cfg.get("save_steps", 100),
         report_to="wandb" if is_main else "none",
         remove_unused_columns=False,
         dataloader_num_workers=2,
