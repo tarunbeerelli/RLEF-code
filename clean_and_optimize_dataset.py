@@ -97,7 +97,7 @@ def main():
     sweep_and_purge_split(target_data_dir, split_name="train")
 
     # 2. Sweep and optimize the complete testing allocation
-    sweep_and_purge_split(target_data_dir, split_name="test")
+    # sweep_and_purge_split(target_data_dir, split_name="test")
 
     print("\n==================================================")
     print("🎉 DATASET PREPROCESSING AND PURGE COMPLETE!")
