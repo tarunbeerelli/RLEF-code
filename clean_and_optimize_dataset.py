@@ -54,9 +54,13 @@ def sweep_and_purge_split(data_dir, split_name):
             inputs=p.inputs,
             outputs=p.outputs,
             fn_name=p.fn_name,
-            reward_type="continuous",
-            shaped=False,
+            current_turn=1,
             difficulty=p.difficulty,
+            ablation_cfg={
+                "use_step_credit": False,
+                "use_lint_bonus": False,
+                "use_multi_turn": False,
+            },
         )
 
         # Check if the solution is 100% correct across all test parameters
