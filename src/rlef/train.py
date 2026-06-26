@@ -350,7 +350,6 @@ def main():
         gradient_accumulation_steps=cfg.get("gradient_accumulation_steps", 1),
         learning_rate=cfg.get("learning_rate", 5e-6),
         beta=cfg.get("kl_coef", 0.05),
-        entropy_coef=cfg.get("entropy_coef", 0.1),
         lr_scheduler_type="cosine",
         warmup_ratio=0.05,
         bf16=cfg.get("bf16", True),
