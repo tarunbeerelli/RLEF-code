@@ -122,7 +122,6 @@ def eval_apps(
             inputs=problem.inputs,
             outputs=problem.outputs,
             fn_name=problem.fn_name,
-            reward_type="continuous",
             shaped=False,  # raw pass rate for eval — no shaping
         )
 
@@ -325,7 +324,6 @@ def eval_livecodebench(
             inputs=inputs,
             outputs=outputs,
             fn_name=None,
-            reward_type="continuous",
             shaped=False,
         )
 
