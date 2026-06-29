@@ -2,19 +2,13 @@
 reward.py — Reward functions for RLEF-Code
 
 Three components:
-
   1. execution_reward(code, problem, ablation_cfg)
        Runs code against all APPS test cases via sandbox execution.
        Returns continuous pass rate and applies ablation-controlled dense rewards.
-
   2. shape_reward(raw)
        Applies log shaping to compress the reward range.
-       Makes small improvements in the low range feel larger.
-
   3. assign_step_credit(trajectory, final_reward)
-       Discounts the final reward back through trajectory steps
-       weighted by how "useful" each tool call was.
-
+       Discounts the final reward back through trajectory steps.
   4. normalize_batch_rewards(rewards)
        Applies Z-score normalization across a batch of generations.
 """
@@ -51,6 +45,8 @@ class StepCredit:
 
 
 # ── 2. Execution Reward Internal Pipeline ─────────────────────────────────────
+
+
 def _run_against_test_cases(
     code: str,
     inputs: list[str] | str,
@@ -63,7 +59,6 @@ def _run_against_test_cases(
     entirely inside isolated subprocess runs to honor timeout bounds perfectly
     and prevent distributed master GPU thread hangs.
     """
-
     # --- DEFENSIVE DATA UNBOXING ---
     if isinstance(inputs, str):
         try:
@@ -273,13 +268,6 @@ def _classify_error(result: ToolResult) -> str:
 
 # ── 3. Main Reward Evaluation Entrypoint ──────────────────────────────────────
 
-MAX_TESTS_BY_DIFFICULTY = {
-    "introductory": 10,
-    "interview": 20,
-    "competition": 30,
-}
-DEFAULT_MAX_TESTS = 10
-
 
 def execution_reward(
     code: str | list[str],
@@ -287,9 +275,10 @@ def execution_reward(
     outputs: list[str],
     fn_name: str | None = None,
     timeout: int = 10,
-    difficulty: str = "introductory",
+    difficulty: str | list[str] = "introductory",
     current_turn: int = 1,
     ablation_cfg: dict | None = None,
+    shaped: bool = True,  # Added signature fix for eval.py baseline routing
 ) -> ExecutionResult:
     """
     Calculates granular code rewards using explicit research ablation toggles.
@@ -302,6 +291,10 @@ def execution_reward(
             "use_log_reward": False,
         }
 
+    # Handle batched GRPO kwargs lists
+    if isinstance(difficulty, list):
+        difficulty = difficulty[0] if len(difficulty) > 0 else "introductory"
+
     if isinstance(code, list):
         code = code[0]
     if not inputs or not code:
@@ -313,6 +306,17 @@ def execution_reward(
 
     pass_rate = passed / total if total > 0 else 0.0
     base_reward = pass_rate
+
+    # If shaped is disabled (eval mode), return pure pass rate metric immediately
+    if not shaped:
+        return ExecutionResult(
+            passed=passed,
+            total=total,
+            pass_rate=pass_rate,
+            raw_reward=base_reward,
+            final_reward=pass_rate,
+            error_types=error_types,
+        )
 
     # Toggle: Lint / Syntax Scaffolding
     compile_bonus = 0.0
@@ -343,7 +347,6 @@ def execution_reward(
 
     # Toggle: Log Shaping
     if ablation_cfg.get("use_log_reward", False):
-        # Cap at 1.0 to respect the shape_reward assertion limits
         capped_reward = min(1.0, final_reward)
         final_reward = shape_reward(capped_reward)
 
@@ -351,7 +354,7 @@ def execution_reward(
         passed=passed,
         total=total,
         pass_rate=pass_rate,
-        raw_reward=base_reward,  # Preserve pure pass_rate as raw metric
+        raw_reward=base_reward,
         final_reward=final_reward,
         error_types=error_types,
     )
@@ -361,9 +364,7 @@ def execution_reward(
 
 
 def shape_reward(raw: float) -> float:
-    """
-    Log-shape a reward value from [0, 1] →.
-    """
+    """Log-shape a reward value from [0, 1]."""
     assert 0.0 <= raw <= 1.0, f"reward must be in [0, 1], got {raw}"
     return math.log1p(raw * (math.e - 1))
 
@@ -429,8 +430,6 @@ def normalize_batch_rewards(
 ) -> list[float]:
     """
     Toggle: Z-Score Batch Normalization.
-    Takes a list of rewards across a generation batch and normalizes them.
-    Used in train.py just before advantage calculation.
     """
     if not use_normalization or len(rewards) <= 1:
         return rewards
@@ -439,7 +438,6 @@ def normalize_batch_rewards(
     mean = np.mean(arr)
     std = np.std(arr)
 
-    # Prevent divide by zero if std dev is zero
     if std < 1e-8:
         return [0.0] * len(rewards)
 

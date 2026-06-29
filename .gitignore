@@ -15,3 +15,7 @@ data/
 .env
 .coverage
 instance_data/
+local_checkpoints
+local_logs
+local_results
+test_runner.py

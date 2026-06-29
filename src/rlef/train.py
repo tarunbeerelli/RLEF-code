@@ -308,7 +308,7 @@ def main():
     # ── Load model ────────────────────────────────────────────────────────────
     model = AutoModelForCausalLM.from_pretrained(
         cfg["model_name"],
-        dtype=torch.bfloat16,
+        torch_dtype=torch.bfloat16,
         trust_remote_code=True,
     )
 

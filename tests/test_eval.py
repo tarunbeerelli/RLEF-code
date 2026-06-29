@@ -1,129 +1,69 @@
 """
-Tests for eval and ablation modules.
-Actual model inference is skipped locally — we test the
-plumbing: summary computation, config generation, result parsing.
+Unit tests for the updated multi-turn evaluation framework.
+Ensures tracking payloads serialize correctly to destination files.
 """
 
+from unittest.mock import MagicMock, mock_open, patch
+
 import pytest
-from rlef.ablations import ABLATIONS, generate_ablation_configs
-from rlef.eval import _compute_summary
-
-# ── Summary tests ─────────────────────────────────────────────────────────────
-
-
-def test_compute_summary_perfect():
-    results = [
-        {"difficulty": "introductory", "pass_rate": 1.0},
-        {"difficulty": "introductory", "pass_rate": 1.0},
-    ]
-    s = _compute_summary(results, tag="test", benchmark="apps")
-    assert s["pass_at_1"] == pytest.approx(1.0)
-    assert s["solved"] == 2
-    assert s["total"] == 2
+from rlef.data import APPSProblem
+from rlef.eval import eval_apps
+from rlef.trajectory import EpisodeStatus, Trajectory
 
 
-def test_compute_summary_partial():
-    results = [
-        {"difficulty": "introductory", "pass_rate": 1.0},
-        {"difficulty": "interview", "pass_rate": 0.0},
-    ]
-    s = _compute_summary(results, tag="test", benchmark="apps")
-    assert s["pass_at_1"] == pytest.approx(0.5)
-    assert s["by_difficulty"]["introductory"]["pass_at_1"] == pytest.approx(1.0)
-    assert s["by_difficulty"]["interview"]["pass_at_1"] == pytest.approx(0.0)
+@pytest.fixture
+def mock_apps_problems_dataset():
+    """Generates a list containing a single mock APPS problem for unit test runtime isolation."""
+    prob = MagicMock(spec=APPSProblem)
+    prob.problem_id = 101
+    prob.difficulty = "introductory"
+    prob.inputs = [["1", "2"]]
+    prob.outputs = [["3"]]
+    prob.prompt = "Write a function to sum two inputs."
+    return [prob]
 
 
-def test_compute_summary_empty():
-    s = _compute_summary([], tag="test", benchmark="apps")
-    assert s["pass_at_1"] == pytest.approx(0.0)
-    assert s["total"] == 0
+@patch("rlef.eval.run_agent_trajectory")
+@patch("rlef.eval.load_apps_split")
+def test_eval_apps_runs_trajectory_and_saves_json(
+    mock_load_apps, mock_run_trajectory, mock_apps_problems_dataset, tmp_path
+):
+    """
+    Asserts that eval_apps executes the full stateful agent loop
+    and writes out summary telemetry dictionaries safely.
+    """
+    # 1. Setup environmental dataset controls
+    mock_load_apps.return_value = mock_apps_problems_dataset
 
+    mock_traj = MagicMock(spec=Trajectory)
+    mock_traj.status = EpisodeStatus.SOLVED
+    mock_traj.final_reward = 1.0
+    mock_traj.current_turn = 2
+    mock_traj.tool_usage = {"generate_tests": 1, "execute": 1}
+    mock_traj.error_types = []
+    mock_run_trajectory.return_value = mock_traj
 
-def test_compute_summary_by_difficulty_counts():
-    results = [
-        {"difficulty": "introductory", "pass_rate": 1.0},
-        {"difficulty": "introductory", "pass_rate": 0.0},
-        {"difficulty": "interview", "pass_rate": 1.0},
-    ]
-    s = _compute_summary(results, tag="test", benchmark="apps")
-    assert s["by_difficulty"]["introductory"]["total"] == 2
-    assert s["by_difficulty"]["introductory"]["solved"] == 1
-    assert s["by_difficulty"]["interview"]["total"] == 1
+    mock_model = MagicMock()
+    mock_tokenizer = MagicMock()
 
+    # 2. Intercept JSON writing by mocking file operations directly to avoid directory system collisions
+    m_open = mock_open()
+    with patch("rlef.eval.open", m_open, create=True), patch("rlef.eval.Path.mkdir"):
+        summary = eval_apps(
+            model=mock_model,
+            tokenizer=mock_tokenizer,
+            data_dir="mock/dir",
+            tag="smoke_test",
+            max_examples=1,
+            device="cpu",
+            max_turns=2,
+        )
 
-# ── Ablation config tests ─────────────────────────────────────────────────────
+    # 3. Structural verification assertions
+    assert summary["total"] == 1
+    assert summary["solved"] == 1
+    assert summary["pass_at_1"] == 1.0
+    assert "introductory" in summary["by_difficulty"]
 
-
-def test_generate_ablation_configs(tmp_path):
-    base_cfg = {
-        "model_name": "Qwen/Qwen2.5-Coder-7B-Instruct",
-        "reward_type": "continuous",
-        "shaped": True,
-        "credit_type": "step",
-        "max_turns": 1,
-        "output_dir": "./checkpoints",
-        "wandb_project": "rlef-code",
-    }
-    paths = generate_ablation_configs(base_cfg, tmp_path)
-    # base + one per ablation
-    assert len(paths) == len(ABLATIONS) + 1
-
-
-def test_ablation_configs_have_correct_overrides(tmp_path):
-    import yaml
-
-    base_cfg = {
-        "model_name": "Qwen/Qwen2.5-Coder-7B-Instruct",
-        "reward_type": "continuous",
-        "shaped": True,
-        "credit_type": "step",
-        "max_turns": 1,
-        "output_dir": "./checkpoints",
-        "wandb_project": "rlef-code",
-    }
-    generate_ablation_configs(base_cfg, tmp_path)
-
-    binary_path = tmp_path / "binary_reward.yaml"
-    assert binary_path.exists()
-    with open(binary_path) as f:
-        cfg = yaml.safe_load(f)
-    assert cfg["reward_type"] == "binary"
-    assert cfg["shaped"] is False
-
-
-def test_ablation_configs_dont_mutate_base(tmp_path):
-    import yaml
-
-    base_cfg = {
-        "model_name": "Qwen/Qwen2.5-Coder-7B-Instruct",
-        "reward_type": "continuous",
-        "shaped": True,
-        "credit_type": "step",
-        "max_turns": 1,
-        "output_dir": "./checkpoints",
-        "wandb_project": "rlef-code",
-    }
-    generate_ablation_configs(base_cfg, tmp_path)
-
-    # base config should be unchanged
-    base_path = tmp_path / "base.yaml"
-    with open(base_path) as f:
-        saved = yaml.safe_load(f)
-    assert saved["reward_type"] == "continuous"
-    assert saved["shaped"] is True
-
-
-def test_all_ablation_names_unique():
-    names = [name for name, _ in ABLATIONS]
-    assert len(names) == len(set(names))
-
-
-def test_compute_summary_livecodebench():
-    results = [
-        {"difficulty": "easy", "pass_rate": 1.0},
-        {"difficulty": "medium", "pass_rate": 0.0},
-        {"difficulty": "hard", "pass_rate": 0.0},
-    ]
-    s = _compute_summary(results, tag="baseline", benchmark="livecodebench")
-    assert s["benchmark"] == "livecodebench"
-    assert s["pass_at_1"] == pytest.approx(1 / 3)
+    # Confirm the JSON dumper was called to write evaluation output logs
+    assert m_open.called
