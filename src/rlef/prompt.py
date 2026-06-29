@@ -1,30 +1,8 @@
 """
-prompt.py — Prompt formatting and model output parsing
+prompt.py — Prompt formatting and model output parsing with Forced Asymmetry.
 
-Two responsibilities:
-
-  1. format_prompt(problem, history)
-       Converts an APPS problem + conversation history into a
-       prompt string the model can respond to.
-
-  2. parse_output(text)
-       Extracts the tool call and code block from model output.
-       Returns a ParsedOutput with tool name and code.
-
-The format uses XML-style tags because they are:
-  - Easy for the model to learn (seen in pretraining)
-  - Unambiguous to parse with regex
-  - Human readable for debugging
-
-Format the model must follow:
-  <tool>execute|lint|generate_tests</tool>
-  <code>
-  ... python code here ...
-  </code>
-
-If the model doesn't follow the format we return a ParsedOutput
-with tool=None and code=None — the trajectory manager handles
-this as a format error and ends the episode.
+Manages asymmetric instruction distributions and XML tag validation rules
+across separate phases of a multi-turn reasoning episode.
 """
 
 import re
@@ -33,33 +11,48 @@ from dataclasses import dataclass
 from rlef.data import APPSProblem
 from rlef.tools import ToolName
 
-SYSTEM_PROMPT = """You are an expert Python programmer. Solve the given programming problem by writing a complete Python solution.
-Output ONLY a Python code block like this:
+# ── Forced Asymmetry System Prompts ──────────────────────────────────────────
 
-```python
-# your solution here
-```
+TURN_1_ORACLE_PROMPT = """You are an expert Python algorithmic scientist.
+Analyze the user's coding problem description and map out its semantic constraints.
 
-No explanations before or after the code block.
+CRITICAL INITIAL PROTOCOL:
+You are strictly forbidden from writing a final solution code block or running tools other than 'generate_tests' on this first turn.
+You MUST invoke the test generation tool to isolate edge cases, boundary parameters, and valid inputs.
+
+You must wrap your selection in explicit XML block structures precisely like this:
+<tool>generate_tests</tool>
+<code>
+# Provide an empty stub or your tentative function signature here
+</code>
 """
 
-PROBLEM_TEMPLATE = """{question}
+SUBSEQUENT_TURNS_PROMPT = """You are an expert Python programmer operating in a multi-turn execution sandbox.
+Review the user's test-case criteria, compile errors, or lint feedback.
+
+Iterate on your implementation using our operational tool layer.
+Available tools:
+- <tool>execute</tool> : Evaluates your functional code against custom test criteria.
+- <tool>lint</tool>    : Runs formatting check guards via Ruff to clean syntax.
+
+You must use XML block tags to call tools. When your logic completely passes all tests, issue a final <tool>execute</tool> block.
 """
 
-FEEDBACK_TEMPLATE = """\
-Tool: {tool}
+PROBLEM_TEMPLATE = "{question}\n"
+
+FEEDBACK_TEMPLATE = """Tool: {tool}
 Result:
 {output}
 
-Continue solving. Use execute when your solution is ready.\
+Continue solving. Use <tool>execute</tool> when your code adjustments are ready.
 """
 
 
 @dataclass
 class ParsedOutput:
     tool: str | None  # "execute", "lint", "generate_tests", or None if parse failed
-    code: str | None  # extracted code, or None if parse failed
-    raw: str  # original model output, always preserved
+    code: str | None  # extracted code string, or None if parse failed
+    raw: str  # original unmutated model token generation string
 
     @property
     def is_valid(self) -> bool:
@@ -76,65 +69,83 @@ class ParsedOutput:
         return None
 
 
+# ── In-Context Few-Shot Realignment Trajectory ─────────────────────────────────
+
+FEW_SHOT_ALIGNMENT_HISTORY = [
+    {
+        "role": "user",
+        "content": "Write a function `double_it(x)` that returns twice the integer input.",
+    },
+    {
+        "role": "assistant",
+        "content": "<tool>generate_tests</tool>\n<code>\ndef test_double():\n    assert double_it(2) == 4\n    assert double_it(-1) == -2\n    assert double_it(0) == 0\n</code>",
+    },
+    {
+        "role": "user",
+        "content": "Tool: generate_tests\nResult:\n3 custom assertions successfully compiled into local sandbox execution parameters.",
+    },
+    {
+        "role": "assistant",
+        "content": "<tool>execute</tool>\n<code>\ndef double_it(x):\n    return x * 2\n</code>",
+    },
+    {
+        "role": "user",
+        "content": "Tool: execute\nResult:\nPass rate: 1.0. All custom testing vectors evaluated successfully.",
+    },
+]
+
+# ── Trajectory Phase Formatting ───────────────────────────────────────────────
+
+
 def format_prompt(
     problem: APPSProblem,
     history: list[dict] | None = None,
 ) -> list[dict]:
     """
-    Format a problem into a chat message list.
-
-    Returns a list of dicts in the format:
-      [{"role": "system", "content": "..."},
-       {"role": "user",   "content": "..."},
-       {"role": "assistant", "content": "..."},  # previous turns
-       ...]
-
-    This is the standard HuggingFace chat format that
-    apply_chat_template() expects.
-
-    Args:
-        problem: APPSProblem dataclass
-        history: list of previous (assistant, user) message dicts
-                 from earlier turns in the same episode
+    Format a problem description into a chat message history sequence.
+    Appends strict few-shot examples on turn 1 to align the coder to our XML schema.
     """
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": PROBLEM_TEMPLATE.format(question=problem.question.strip()),
-        },
-    ]
-
-    # append conversation history from previous turns
-    if history:
+    if not history or len(history) == 0:
+        system_content = TURN_1_ORACLE_PROMPT
+        messages = [
+            {"role": "system", "content": system_content},
+            *FEW_SHOT_ALIGNMENT_HISTORY,
+            {
+                "role": "user",
+                "content": PROBLEM_TEMPLATE.format(question=problem.question.strip()),
+            },
+        ]
+    else:
+        system_content = SUBSEQUENT_TURNS_PROMPT
+        messages = [
+            {"role": "system", "content": system_content},
+            {
+                "role": "user",
+                "content": PROBLEM_TEMPLATE.format(question=problem.question.strip()),
+            },
+        ]
         messages.extend(history)
 
     return messages
 
 
 def format_feedback(tool: str, output: str) -> dict:
-    """
-    Format tool feedback as a user message to append to history.
-    This is what the model sees after each tool call.
-    """
+    """Format execution output logs back into message sequences."""
     return {
         "role": "user",
         "content": FEEDBACK_TEMPLATE.format(tool=tool, output=output.strip()),
     }
 
 
+# ── Strict Extraction Parser ──────────────────────────────────────────────────
+
+
 def parse_output(text: str) -> ParsedOutput:
     """
-    Parse model output to extract code.
-
-    Handles two formats:
-      1. XML tags:   <tool>execute</tool><code>...</code>
-      2. Markdown:   ```python ... ```
-
-    XML format: tool name must be valid, otherwise tool=None (invalid).
-    Markdown format: tool defaults to "execute" since model answered naturally.
+    Parse model output to extract tools and targeted logic sequences.
+    Strictly parses XML tag declarations to eliminate ambiguous code generation states.
     """
-    # try XML format first
+    # Parse explicit XML structures
     tool_match = re.search(r"<tool>\s*(\w+)\s*</tool>", text, re.IGNORECASE)
     xml_tool = tool_match.group(1).lower().strip() if tool_match else None
     valid_tools = {"execute", "lint", "generate_tests"}
@@ -142,12 +153,11 @@ def parse_output(text: str) -> ParsedOutput:
     code_match = re.search(r"<code>\s*(.*?)\s*</code>", text, re.DOTALL)
     xml_code = code_match.group(1).strip() if code_match else None
 
-    # if XML tags found, validate strictly
     if tool_match or code_match:
         tool = xml_tool if xml_tool in valid_tools else None
         return ParsedOutput(tool=tool, code=xml_code, raw=text)
 
-    # fallback: try markdown code block — default tool to execute
+    # Legacy markdown fallback for backwards compatibility or single-shot evaluations
     md_match = re.search(r"```(?:python)?\s*\n(.*?)\n```", text, re.DOTALL)
     if md_match:
         code = md_match.group(1).strip()

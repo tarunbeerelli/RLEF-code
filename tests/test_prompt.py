@@ -1,101 +1,101 @@
-"""Tests for prompt formatting and output parsing."""
+"""
+Tests for the asymmetric prompt and XML parsing layer.
 
+Validates that Turn 1 delivers the Test Oracle context, subsequent
+turns scale down to programmatic sandbox permissions, and XML regex matches
+decouple code safely.
+"""
+
+from unittest.mock import MagicMock
+
+import pytest
 from rlef.data import APPSProblem
-from rlef.prompt import format_feedback, format_prompt, parse_output
-from rlef.tools import ToolName
+from rlef.prompt import (
+    SUBSEQUENT_TURNS_PROMPT,
+    TURN_1_ORACLE_PROMPT,
+    format_prompt,
+    parse_output,
+)
 
 
-def _make_problem() -> APPSProblem:
-    return APPSProblem(
-        problem_id="0001",
-        difficulty="introductory",
-        question="Write a function that adds two numbers.",
-        inputs=["1 2", "3 4"],
-        outputs=["3", "7"],
-        fn_name=None,
-        solutions=[],
-        url="",
-    )
+@pytest.fixture
+def mock_apps_problem():
+    """Generates an isolated APPS problem asset for contract testing."""
+    prob = MagicMock(spec=APPSProblem)
+    prob.question = "Write a function to verify if an integer is a palindrome."
+    return prob
 
 
-def test_parse_valid_execute():
-    text = "<tool>execute</tool>\n<code>\nprint(1+1)\n</code>"
-    result = parse_output(text)
-    assert result.is_valid
-    assert result.tool == "execute"
-    assert result.tool_name == ToolName.EXECUTE
-    assert "print(1+1)" in result.code
+# ── 1. Forced Asymmetry Routing Tests ─────────────────────────────────────────
 
 
-def test_parse_valid_lint():
-    text = "<tool>lint</tool>\n<code>\ndef f():\n    return 1\n</code>"
-    result = parse_output(text)
-    assert result.is_valid
-    assert result.tool == "lint"
-    assert result.tool_name == ToolName.LINT
+def test_format_prompt_initializes_turn_1_as_oracle(mock_apps_problem):
+    """Ensures Turn 1 delivers the oracle configuration alongside the live question."""
+    messages = format_prompt(problem=mock_apps_problem, history=[])
 
-
-def test_parse_valid_generate_tests():
-    text = "<tool>generate_tests</tool>\n<code>\ndef f(x): return x\n</code>"
-    result = parse_output(text)
-    assert result.is_valid
-    assert result.tool == "generate_tests"
-    assert result.tool_name == ToolName.TESTS
-
-
-def test_parse_invalid_tool_name():
-    text = "<tool>unknown_tool</tool>\n<code>\nprint(1)\n</code>"
-    result = parse_output(text)
-    assert not result.is_valid
-    assert result.tool is None
-
-
-def test_parse_missing_code_block():
-    text = "<tool>execute</tool>\nsome code without tags"
-    result = parse_output(text)
-    assert not result.is_valid
-    assert result.code is None
-
-
-def test_parse_missing_tool_tag():
-    text = "<code>\nprint(1)\n</code>"
-    result = parse_output(text)
-    assert not result.is_valid
-    assert result.tool is None
-
-
-def test_parse_preserves_raw():
-    text = "<tool>execute</tool>\n<code>\nprint(1)\n</code>"
-    result = parse_output(text)
-    assert result.raw == text
-
-
-def test_format_prompt_returns_messages():
-    problem = _make_problem()
-    messages = format_prompt(problem)
-    assert isinstance(messages, list)
     assert messages[0]["role"] == "system"
-    assert messages[1]["role"] == "user"
-    assert problem.question[:20] in messages[1]["content"]
+    assert messages[0]["content"] == TURN_1_ORACLE_PROMPT
+
+    # The active live question should sit at the very end of the message history stack
+    assert messages[-1]["role"] == "user"
+    assert "palindrome" in messages[-1]["content"]
 
 
-def test_format_prompt_with_history():
-    problem = _make_problem()
-    history = [
+def test_format_prompt_transitions_to_sandbox_on_later_turns(mock_apps_problem):
+    """Asserts that once conversation history exists, execution tools unlock."""
+    mock_history = [
+        {"role": "assistant", "content": "<tool>generate_tests</tool><code></code>"},
         {
-            "role": "assistant",
-            "content": "<tool>lint</tool>\n<code>\nprint(1)\n</code>",
+            "role": "user",
+            "content": "Tool: generate_tests\nResult: 3 assert statements added.",
         },
-        {"role": "user", "content": "Tool: lint\nResult:\nNo lint errors."},
     ]
-    messages = format_prompt(problem, history=history)
-    assert len(messages) == 4
-    assert messages[2]["role"] == "assistant"
-    assert messages[3]["role"] == "user"
+    messages = format_prompt(problem=mock_apps_problem, history=mock_history)
+
+    assert messages[0]["role"] == "system"
+    assert messages[0]["content"] == SUBSEQUENT_TURNS_PROMPT
+    # Verify the multi-turn trajectory context is preserved chronologically at the end
+    assert messages[-2] == mock_history[0]
+    assert messages[-1] == mock_history[1]
 
 
-def test_format_feedback_structure():
-    fb = format_feedback("execute", "stdout: 3")
-    assert fb["role"] == "user"
-    assert "execute" in fb["content"]
-    assert "stdout: 3" in fb["content"]
+# ── 2. Strict XML Parsing Boundary Tests ──────────────────────────────────────
+
+
+def test_parse_output_extracts_valid_xml_blocks():
+    """Validates perfect regex extraction fields from structured XML envelopes."""
+    raw_response = "<tool>execute</tool><code>def is_pal(x):\n    return str(x) == str(x)[::-1]</code>"
+    parsed = parse_output(raw_response)
+
+    assert parsed.is_valid is True
+    assert parsed.tool == "execute"
+    assert "return str(x)" in parsed.code
+
+
+def test_parse_output_ignores_xml_whitespace_and_case():
+    """Ensures parser isolates values regardless of structural spacing or character case."""
+    raw_response = "<TOOL>\n  lint\n</TOOL>\n<code>\nx = 5\n</code>"
+    parsed = parse_output(raw_response)
+
+    assert parsed.is_valid is True
+    assert parsed.tool == "lint"
+    assert parsed.code == "x = 5"
+
+
+def test_parse_output_fails_on_unauthorized_tools():
+    """Asserts that attempts to issue non-whitelist tools returns invalid schemas."""
+    raw_response = "<tool>delete_sandbox</tool><code>import os</code>"
+    parsed = parse_output(raw_response)
+
+    assert parsed.is_valid is False
+    assert parsed.tool is None
+
+
+def test_parse_output_fallback_to_legacy_markdown():
+    """Validates backwards compatibility with single-turn python markdown style blocks."""
+    raw_response = "```python\ndef solve(): pass\n```"
+    parsed = parse_output(raw_response)
+
+    assert parsed.is_valid is True
+    assert parsed.tool == "execute"
+    assert parsed.code == "def solve(): pass"

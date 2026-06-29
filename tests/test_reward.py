@@ -107,7 +107,6 @@ def test_execution_reward_correct_solution():
         code=code,
         inputs=["1 2", "3 4"],
         outputs=["3", "7"],
-        reward_type="continuous",
         shaped=False,
     )
     assert result.passed == 2
@@ -123,7 +122,6 @@ def test_execution_reward_partial_credit():
         code=code,
         inputs=["1 2", "3 4"],
         outputs=["3", "7"],
-        reward_type="continuous",
         shaped=False,
     )
     assert result.passed == 1
@@ -131,16 +129,25 @@ def test_execution_reward_partial_credit():
 
 
 @pytest.mark.integration
-def test_execution_reward_binary_all_or_nothing():
+def test_execution_reward_with_ablation_modifications():
+    # Verify our custom dense reward ablation tracking handles penalties
     code = "print(3)"
     result = execution_reward(
         code=code,
         inputs=["1 2", "3 4"],
         outputs=["3", "7"],
-        reward_type="binary",
-        shaped=False,
+        current_turn=3,
+        shaped=True,
+        ablation_cfg={
+            "use_lint_bonus": False,
+            "use_step_credit": False,
+            "use_multi_turn": True,  # Applies turn penalty: (3 - 1) * 0.05 = -0.10
+            "use_log_reward": False,
+        },
     )
-    assert result.raw_reward == pytest.approx(0.0)
+    # raw pass_rate is 0.5, but turn penalty drops final reward below 0.5
+    assert result.raw_reward == 0.5
+    assert result.final_reward == pytest.approx(0.5 - 0.10)
 
 
 @pytest.mark.integration
@@ -150,8 +157,13 @@ def test_execution_reward_shaped_higher_than_raw():
         code=code,
         inputs=["1 2", "3 4"],
         outputs=["3", "7"],
-        reward_type="continuous",
         shaped=True,
+        ablation_cfg={
+            "use_lint_bonus": False,
+            "use_step_credit": False,
+            "use_multi_turn": False,
+            "use_log_reward": True,  # Force log shaping explicitly
+        },
     )
-    # shaped 0.5 should be > 0.5
+    # Log shaped 0.5 should compress to a value higher than raw 0.5
     assert result.final_reward > result.raw_reward

@@ -1,22 +1,53 @@
-#!/bin/bash
-# Run evaluation
-# Usage: bash scripts/run_eval.sh baseline
-#        bash scripts/run_eval.sh trained
-set -e
+#!/usr/bin/env bash
+# ==============================================================================
+# scripts/run_eval.sh
+# Dual-4090 Isolated Device Evaluation Driver for RLEF-Code
+# ==============================================================================
 
-TAG=${1:-baseline}
-CHECKPOINT=${2:-none}
+set -eo pipefail
 
-echo "Running eval: tag=$TAG checkpoint=$CHECKPOINT"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+cd "${PROJECT_ROOT}"
 
-nohup poetry run python -m rlef.eval \
-  --checkpoint "$CHECKPOINT" \
-  --tag "$TAG" \
-  --benchmark apps \
-  --max_examples 200 \
-  --difficulties introductory interview \
-  --data_dir data/raw/APPS \
-  --device cuda \
-  > "logs/eval_${TAG}.log" 2>&1 &
+export PYTHONPATH="${PROJECT_ROOT}/src:${PYTHONPATH:-}"
 
-echo "PID: $! — tail -f logs/eval_${TAG}.log"
+# Runtime Configuration Parameters
+MAX_EXAMPLES=600        # Balanced stratified test slice target
+MAX_TURNS=5            # Multi-turn test-time compute interaction budget
+DEVICE="cuda:0"         # Isolate completely to the first RTX 4090 device
+
+echo "======================================================================"
+echo "📊 Launching Multi-Turn Evaluation Suite on Isolated RTX 4090"
+echo "   Target Dataset Slice: Balanced APPS Test Split"
+echo "   Target Execution Device: ${DEVICE}"
+echo "   Budget Ceiling: ${MAX_TURNS} Turns per problem instance"
+echo "======================================================================"
+
+# ── Phase 1: Establish Base Reference Baseline ──────────────────────────────
+echo -e "\n[Phase 1/2] Evaluating Untrained Base Reference Model..."
+poetry run python -m rlef.eval \
+    --checkpoint none \
+    --tag baseline \
+    --max_examples "${MAX_EXAMPLES}" \
+    --max_turns "${MAX_TURNS}" \
+    --device "${DEVICE}"
+
+# ── Phase 2: Evaluate Reinforced Checkpoint ─────────────────────────────────
+TRAINED_CHECKPOINT="./checkpoints/final"
+
+if [ -d "${TRAINED_CHECKPOINT}" ]; then
+    echo -e "\n[Phase 2/2] Evaluating Reinforcement-Trained Checkpoint..."
+    poetry run python -m rlef.eval \
+        --checkpoint "${TRAINED_CHECKPOINT}" \
+        --tag trained \
+        --max_examples "${MAX_EXAMPLES}" \
+        --max_turns "${MAX_TURNS}" \
+        --device "${DEVICE}"
+else
+    echo -e "\n dryness-check: Checkpoint missing at: ${TRAINED_CHECKPOINT}. Skipping Phase 2."
+fi
+
+echo "======================================================================"
+echo "🏁 Evaluation Sweeps Complete. Trajectory metrics saved to results/"
+echo "======================================================================"
