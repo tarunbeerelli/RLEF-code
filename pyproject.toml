@@ -30,6 +30,15 @@ regex = "^2026.5.9"
 reportlab = "^5.0.0"
 jupytext = "^1.19.4"
 peft = "^0.19.1"
+vllm = "^0.5.0"
+grpcio = "^1.64.1"
+grpcio-tools = "^1.64.1"
+fastapi = "^0.111.0"
+uvicorn = "^0.30.1"
+
+[tool.poetry.group.prod.dependencies]
+openrlhf = "^0.10.2"
+ray = { version = "^2.35.0", extras = ["default"] }
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"

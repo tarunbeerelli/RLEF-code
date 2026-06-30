@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package rlef_reward;
+
+service RewardService {
+  rpc EvaluateBatch (RewardRequest) returns (RewardResponse);
+}
+
+message TextSample {
+  string prompt = 1;
+  string completion = 2;
+  string metadata_json = 3; // New hook to carry unit test schemas
+}
+
+message RewardRequest {
+  repeated TextSample samples = 1;
+}
+
+message RewardResponse {
+  repeated float rewards = 1;
+}
