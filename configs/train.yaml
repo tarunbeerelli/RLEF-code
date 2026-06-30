@@ -1,6 +1,6 @@
 model_name: "Qwen/Qwen2.5-Coder-7B-Instruct"
 data_dir: "data/raw/APPS"
-difficulties: ["introductory"]
+difficulties: ["introductory", "interview", "competition"]
 train_split: "train"
 max_turns: 5
 reward_type: "continuous"

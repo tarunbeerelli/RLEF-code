@@ -19,3 +19,5 @@ local_checkpoints
 local_logs
 local_results
 test_runner.py
+data/processed/
+src/rlef/*_pb2*.py
