@@ -53,6 +53,10 @@ jupytext = ">=1.16"
 
 [tool.ruff]
 line-length = 88
+extend-exclude = [
+    "src/rlef/reward_pb2.py",
+    "src/rlef/reward_pb2_grpc.py"
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
