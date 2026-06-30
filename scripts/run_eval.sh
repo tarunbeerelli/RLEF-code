@@ -1,53 +1,130 @@
-#!/usr/bin/env bash
-# ==============================================================================
-# scripts/run_eval.sh
-# Dual-4090 Isolated Device Evaluation Driver for RLEF-Code
-# ==============================================================================
+#!/bin/bash
+set -e
 
-set -eo pipefail
+# Bind local project search paths
+export PYTHONPATH=src:.:$PYTHONPATH
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-cd "${PROJECT_ROOT}"
+# Default system configurations (Optimized for 1*H200)
+GPUS_AVAILABLE=1
+CHECKPOINT_PATH="./checkpoint/rlef-7b-grpo"
+EVAL_DATASET="./data/eval_prompts.jsonl"
+FILTERED_DATASET="./data/eval_prompts_balanced_500.jsonl"
+OUTPUT_PATH="./results/eval_outputs.jsonl"
 
-export PYTHONPATH="${PROJECT_ROOT}/src:${PYTHONPATH:-}"
-
-# Runtime Configuration Parameters
-MAX_EXAMPLES=600        # Balanced stratified test slice target
-MAX_TURNS=5            # Multi-turn test-time compute interaction budget
-DEVICE="cuda:0"         # Isolate completely to the first RTX 4090 device
-
-echo "======================================================================"
-echo "📊 Launching Multi-Turn Evaluation Suite on Isolated RTX 4090"
-echo "   Target Dataset Slice: Balanced APPS Test Split"
-echo "   Target Execution Device: ${DEVICE}"
-echo "   Budget Ceiling: ${MAX_TURNS} Turns per problem instance"
-echo "======================================================================"
-
-# ── Phase 1: Establish Base Reference Baseline ──────────────────────────────
-echo -e "\n[Phase 1/2] Evaluating Untrained Base Reference Model..."
-poetry run python -m rlef.eval \
-    --checkpoint none \
-    --tag baseline \
-    --max_examples "${MAX_EXAMPLES}" \
-    --max_turns "${MAX_TURNS}" \
-    --device "${DEVICE}"
-
-# ── Phase 2: Evaluate Reinforced Checkpoint ─────────────────────────────────
-TRAINED_CHECKPOINT="./checkpoints/final"
-
-if [ -d "${TRAINED_CHECKPOINT}" ]; then
-    echo -e "\n[Phase 2/2] Evaluating Reinforcement-Trained Checkpoint..."
-    poetry run python -m rlef.eval \
-        --checkpoint "${TRAINED_CHECKPOINT}" \
-        --tag trained \
-        --max_examples "${MAX_EXAMPLES}" \
-        --max_turns "${MAX_TURNS}" \
-        --device "${DEVICE}"
+# Check if upgrading to the 2*H200 stack later
+if [ "$1" == "--dual" ]; then
+    echo "🚀 Scaling evaluation worker profile to 2*H200 NVLink stack..."
+    GPUS_AVAILABLE=2
 else
-    echo -e "\n dryness-check: Checkpoint missing at: ${TRAINED_CHECKPOINT}. Skipping Phase 2."
+    echo "⚡ Initializing evaluation worker profile on single local H200..."
 fi
 
-echo "======================================================================"
-echo "🏁 Evaluation Sweeps Complete. Trajectory metrics saved to results/"
-echo "======================================================================"
+# Ensure output directories exist structurally
+mkdir -p "$(dirname "$OUTPUT_PATH")"
+mkdir -p "$(dirname "$FILTERED_DATASET")"
+
+# Step 1: Pre-process and slice exactly 500 balanced test samples (150 intro, 250 interview, 100 comp)
+echo "🧹 Extracting optimized 500-case evaluation subset from master dataset..."
+poetry run python3 -c "
+import json
+
+TARGETS = {
+    'introductory': 150,
+    'interview': 250,
+    'competition': 100
+}
+counts = {'introductory': 0, 'interview': 0, 'competition': 0}
+
+with open('${EVAL_DATASET}', 'r') as infile, open('${FILTERED_DATASET}', 'w') as outfile:
+    for line in infile:
+        if not line.strip(): continue
+        data = json.loads(line)
+        diff = str(data.get('difficulty', '')).lower()
+
+        if diff in TARGETS and counts[diff] < TARGETS[diff]:
+            outfile.write(json.dumps(data) + '\n')
+            counts[diff] += 1
+
+print(f'📊 Strategy breakdown compiled: {counts}')
+total_cases = sum(counts.values())
+print(f'✅ Dynamic test slice created with exactly {total_cases} questions.')
+"
+
+# Safe initialization of Ray runtime pools matching active silicon
+ray stop
+ray start --head --num-gpus=${GPUS_AVAILABLE}
+
+# Step 2: Fire up OpenRLHF batch generation over our extracted 500 cases
+echo "🔮 Running high-throughput parallel generation via OpenRLHF vLLM engine..."
+poetry run python3 -m openrlhf.cli.batch_inference \
+   --eval_task generate \
+   --pretrain "${CHECKPOINT_PATH}" \
+   --dataset json@$(dirname "${FILTERED_DATASET}") \
+   --input_key "input" \
+   --output_path "${OUTPUT_PATH}" \
+   --max_len 2048 \
+   --flash_attn \
+   --bf16 \
+   --micro_batch_size 16 \
+   --tp_size ${GPUS_AVAILABLE} \
+   --vllm_gpu_memory_utilization 0.85 \
+   --best_of 1 \
+   --generate_max_len 1024 \
+   --temperature 0.0
+
+echo "✅ Evaluation inference generation complete. Outputs saved to: ${OUTPUT_PATH}"
+
+# Step 3: Run aggregate validation analysis through your gRPC Reward Servicer
+read -p "Do you want to route these completions through the gRPC reward server for full metric analytics? (y/n) " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    echo "📡 Scoring completions against active gRPC reward server rules..."
+    PYTHONPATH=. poetry run python -c "
+import json, asyncio, grpc
+from collections import defaultdict
+from rlef import reward_pb2, reward_pb2_grpc
+
+async def score_eval():
+    async with grpc.aio.insecure_channel('localhost:50051') as channel:
+        stub = reward_pb2_grpc.RewardServiceStub(channel)
+        samples = []
+        difficulties = []
+
+        with open('${OUTPUT_PATH}', 'r') as f:
+            for line in f:
+                if not line.strip(): continue
+                data = json.loads(line)
+                diff = str(data.get('difficulty', 'interview')).lower()
+                difficulties.append(diff)
+                samples.append(reward_pb2.RewardRequest.Sample(
+                    prompt=data.get('input', ''),
+                    completion=data.get('output', ''),
+                    metadata_json=json.dumps({'difficulty': diff})
+                ))
+
+        if not samples:
+            print('⚠️ No evaluations found to process.')
+            return
+
+        request = reward_pb2.RewardResponse(samples=samples)
+        response = await stub.EvaluateBatch(request)
+
+        # Calculate full matrix stratified performance splits
+        tier_scores = defaultdict(list)
+        for score, diff in zip(response.rewards, difficulties):
+            tier_scores[diff].append(score)
+
+        print('\n================== EVALUATION ANALYSIS MATRIX ==================')
+        total_score = 0
+        for tier, scores in tier_scores.items():
+            avg_tier = sum(scores) / len(scores)
+            total_score += sum(scores)
+            print(f'   📈 Tier: {tier.upper():12} | Count: {len(scores):3} | Mean Reward: {avg_tier:.4f}')
+
+        print('----------------------------------------------------------------')
+        print(f'   🏆 AGGREGATE EVAL MEAN: {total_score / len(response.rewards):.4f}')
+        print('================================================================\n')
+
+asyncio.run(score_eval())
+"
+fi

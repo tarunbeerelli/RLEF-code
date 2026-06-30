@@ -1,26 +1,31 @@
-#!/usr/bin/env bash
-# ==============================================================================
-# scripts/run_openrlhf.sh
-# ==============================================================================
-set -eo pipefail
+set -x
 
-# 1. Start the Ray background cluster on the instance
-ray stop --force 2>/dev/null || true
-ray start --head --disable-usage-stats --num-gpus=2
+export PYTHONPATH=src:.:$PYTHONPATH
 
-# 2. Run OpenRLHF optimization using the hierarchical dot configuration format
-python -m openrlhf.cli.train_ppo_ray \
-   --actor.model_name_or_path Qwen/Qwen2.5-Coder-7B-Instruct \
-   --algo.advantage.estimator group_norm \
-   --reward.remote_url src/rlef/reward_bridge.py \
-   --data.prompt_dataset ./data/openrlhf_prompts.jsonl \
-   --data.input_key prompt \
-   --ckpt.output_dir ./checkpoints/openrlhf_out \
-   --data.label_key label \
-   --train.train_batch_size 128 \
-   --rollout.batch_size 512 \
-   --ds.zero_stage 3 \
-   --train.bf16 true \
-   --actor.lora_enable true \
-   --actor.lora_r 16 \
-   --actor.lora_alpha 32
+# Fire up Ray bound strictly to your single local H200 accelerator
+ray stop
+ray start --head --num-gpus=1
+
+poetry run python3 -m openrlhf.cli.train_grpo \
+   --ray_num_nodes 1 \
+   --make_block_explicit_pool \
+   --user_grpc_server_address "localhost:50051" \
+   --pretrain "Qwen/Qwen2.5-7B-Instruct" \
+   --save_path "./checkpoint/rlef-7b-grpo" \
+   --micro_train_batch_size 2 \
+   --train_batch_size 32 \
+   --max_samples 750 \
+   --max_len 2048 \
+   --bf16 \
+   --actor_num_nodes 1 \
+   --actor_per_node_gpus 1 \
+   --vllm_num_engines 1 \
+   --vllm_per_engine_gpus 1 \
+   --vllm_gpu_memory_utilization 0.75 \
+   --num_episodes 1 \
+   --rollout_batch_size 256 \
+   --grant_relative_group_size 8 \
+   --generate_max_len 1024 \
+   --learning_rate 1e-6 \
+   --gradient_checkpointing \
+   --wandb_project "rlef-grpo-single-h200"
