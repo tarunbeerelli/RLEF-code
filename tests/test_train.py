@@ -6,11 +6,21 @@ Run with:
     poetry run pytest tests/test_train.py -v
 """
 
+# Guard against cluster-only training dependencies on local/CI environments
+import importlib.util
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
 from rlef.data import APPSProblem
+
+if importlib.util.find_spec("trl") is None:
+    pytest.skip(
+        "Skipping training tests: cluster-only dependencies (trl) are missing.",
+        allow_module_level=True,
+    )
+
+# Your existing imports continue below...
 from rlef.train import make_reward_fn, prepare_dataset, stratified_sample
 
 

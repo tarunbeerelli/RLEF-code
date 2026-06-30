@@ -8,10 +8,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from rlef import reward_pb2
+from rlef.grpc_reward_server import HighSpeedRewardServicer
 
-from src.rlef.grpc_reward_server import HighSpeedRewardServicer
 
-
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_grpc_servicer_returns_bonus_for_valid_xml():
     """Verifies that completions with valid tool brackets receive formatting bonuses."""
