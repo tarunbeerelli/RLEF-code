@@ -107,7 +107,7 @@ class HighSpeedRewardServicer(reward_pb2_grpc.RewardServiceServicer):
 
 async def serve(port: str = "50051"):
     server = grpc.aio.server(futures.ThreadPoolExecutor(max_workers=16))
-    reward_pb2_grpc.add_reward_service_servicer_to_server(
+    reward_pb2_grpc.add_RewardServiceServicer_to_server(
         HighSpeedRewardServicer(), server
     )
     server.add_insecure_port(f"[::]:{port}")

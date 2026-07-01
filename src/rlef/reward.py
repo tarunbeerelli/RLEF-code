@@ -11,6 +11,8 @@ Three components:
        Discounts the final reward back through trajectory steps.
   4. normalize_batch_rewards(rewards)
        Applies Z-score normalization across a batch of generations.
+  5. format_reward_fn(prompts, completions)
+       Dense shaping reward to score XML tag compliance.
 """
 
 import json
@@ -278,7 +280,7 @@ def execution_reward(
     difficulty: str | list[str] = "introductory",
     current_turn: int = 1,
     ablation_cfg: dict | None = None,
-    shaped: bool = True,  # Added signature fix for eval.py baseline routing
+    shaped: bool = True,
 ) -> ExecutionResult:
     """
     Calculates granular code rewards using explicit research ablation toggles.
@@ -443,3 +445,42 @@ def normalize_batch_rewards(
 
     normalized = (arr - mean) / std
     return normalized.tolist()
+
+
+# ── 7. Structural Schema Formatting Reward ────────────────────────────────────
+
+
+def format_reward_fn(prompts, completions, **kwargs) -> list[float]:
+    """
+    Dense structural compliance reward function for GRPO.
+    Awards partial fractional metrics for matching valid XML tool block structures.
+    """
+    rewards = []
+    for completion in completions:
+        # Extract content text string safely from TRL token structures
+        text = completion[0]["content"] if isinstance(completion, list) else completion
+        score = 0.0
+
+        if not text:
+            rewards.append(0.0)
+            continue
+
+        # Rule A: Open and Close structural tags detected
+        if "<tool>" in text and "</tool>" in text:
+            score += 0.25
+        if "<code>" in text and ("Code>" in text or "</code>" in text):
+            score += 0.25
+
+        # Rule B: Valid operational targeted tool words selected
+        if any(t in text.lower() for t in ["lint", "execute", "generate_tests"]):
+            score += 0.25
+
+        # Rule C: Perfect bounding encapsulations
+        stripped = text.strip()
+        if stripped.startswith("<tool>") and (
+            stripped.endswith("</code>") or stripped.endswith("</tool>")
+        ):
+            score += 0.25
+
+        rewards.append(score)
+    return rewards
