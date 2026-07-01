@@ -276,7 +276,7 @@ def execution_reward(
     inputs: list[str],
     outputs: list[str],
     fn_name: str | None = None,
-    timeout: int = 10,
+    timeout: int = 2,
     difficulty: str | list[str] = "introductory",
     current_turn: int = 1,
     ablation_cfg: dict | None = None,
