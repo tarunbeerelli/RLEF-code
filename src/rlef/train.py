@@ -34,7 +34,7 @@ import wandb
 import yaml
 from accelerate import Accelerator
 from datasets import Dataset
-from peft import LoraConfig, TaskType, get_peft_model
+from peft import LoraConfig, TaskType
 from rlef.data import APPSProblem, difficulty_split, load_apps_split
 from rlef.prompt import format_prompt, parse_output
 from rlef.reward import execution_reward, normalize_batch_rewards
@@ -321,8 +321,8 @@ def main():
         target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],
         bias="none",
     )
-    model = get_peft_model(model, lora_config)
-    model.print_trainable_parameters()
+    # model = get_peft_model(model, lora_config)
+    # model.print_trainable_parameters()
 
     # ── Load and prepare data ─────────────────────────────────────────────────
     if is_main:
@@ -369,6 +369,7 @@ def main():
         train_dataset=dataset,
         processing_class=tokenizer,
         reward_funcs=reward_fn,
+        peft_config=lora_config,
     )
 
     # ── Train ─────────────────────────────────────────────────────────────────

@@ -23,7 +23,7 @@ You MUST invoke the test generation tool to isolate edge cases, boundary paramet
 You must wrap your selection in explicit XML block structures precisely like this:
 <tool>generate_tests</tool>
 <code>
-# Provide an empty stub or your tentative function signature here
+# Provide your tentative test verification logic here
 </code>
 """
 
@@ -35,7 +35,14 @@ Available tools:
 - <tool>execute</tool> : Evaluates your functional code against custom test criteria.
 - <tool>lint</tool>    : Runs formatting check guards via Ruff to clean syntax.
 
-You must use XML block tags to call tools. When your logic completely passes all tests, issue a final <tool>execute</tool> block.
+CRITICAL INSTRUCTION:
+Before submitting code via <tool>execute</tool>, you should invoke <tool>lint</tool> to clean code blocks, clear python runtime type violations, or fix syntactic issues.
+
+You MUST wrap your tool calls in explicit XML block structures precisely like this:
+<tool>lint</tool>
+<code>
+# Your Python code to lint or run goes here
+</code>
 """
 
 PROBLEM_TEMPLATE = "{question}\n"
@@ -86,6 +93,14 @@ FEW_SHOT_ALIGNMENT_HISTORY = [
     },
     {
         "role": "assistant",
+        "content": "<tool>lint</tool>\n<code>\ndef double_it(x):\n  # Check formatting\n  return x*2\n</code>",
+    },
+    {
+        "role": "user",
+        "content": "Tool: lint\nResult:\n0 formatting violations found. Code syntactically valid.",
+    },
+    {
+        "role": "assistant",
         "content": "<tool>execute</tool>\n<code>\ndef double_it(x):\n    return x * 2\n</code>",
     },
     {
@@ -103,7 +118,7 @@ def format_prompt(
 ) -> list[dict]:
     """
     Format a problem description into a chat message history sequence.
-    Appends strict few-shot examples on turn 1 to align the coder to our XML schema.
+    Appends strict few-shot examples across turns to align the coder to our XML schema.
     """
     if not history or len(history) == 0:
         system_content = TURN_1_ORACLE_PROMPT
@@ -119,6 +134,7 @@ def format_prompt(
         system_content = SUBSEQUENT_TURNS_PROMPT
         messages = [
             {"role": "system", "content": system_content},
+            *FEW_SHOT_ALIGNMENT_HISTORY,
             {
                 "role": "user",
                 "content": PROBLEM_TEMPLATE.format(question=problem.question.strip()),

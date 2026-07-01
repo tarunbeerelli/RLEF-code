@@ -11,7 +11,8 @@ temperature: 0.9
 kl_coef: 0.02
 max_prompt_length: 1024
 max_new_tokens: 512
-learning_rate: 0.00001
+learning_rate: 5.0e-5
+vllm_gpu_memory_utilization: 0.15
 per_device_batch: 1
 gradient_accumulation_steps: 8
 num_epochs: 3
