@@ -8,8 +8,8 @@ packages = [{ include = "rlef", from = "src" }]
 package-mode = true
 
 [tool.poetry.dependencies]
-python = ">=3.10"
-torch = "2.5.1"
+python = ">=3.10,<4.0"
+torch = ">=2.4.0,<=2.5.1"
 vllm = "0.6.3"
 transformers = "4.46.0"
 peft = "0.13.2"
@@ -64,7 +64,7 @@ ignore = ["E501", "E402"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v --tb=short --cov=rlef --cov-report=term-missing"
-pythonpath = ["src"]
+pythonpath = ["."]
 markers = ["integration: tests that require external services (E2B API key, network)"]
 
 [build-system]

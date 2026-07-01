@@ -6,11 +6,25 @@ Run with:
     poetry run pytest tests/test_train.py -v
 """
 
+import pytest
+
+# Core protection block: Skip the entire module if CUDA is missing (Mac environment)
+try:
+    import torch
+
+    HAS_CUDA = torch.cuda.is_available()
+except ImportError:
+    HAS_CUDA = False
+
+if not HAS_CUDA:
+    pytest.skip(
+        "Skipping GPU-dependent training tests on local non-CUDA environment.",
+        allow_module_level=True,
+    )
 import importlib.util
 from unittest.mock import MagicMock, patch
 
 import numpy as np
-import pytest
 
 # Guard against cluster-only training dependencies on local/CI environments
 if importlib.util.find_spec("trl") is None:
