@@ -24,8 +24,8 @@ def test_transformers_minimum_version():
     from packaging.version import Version
 
     assert Version(transformers.__version__) >= Version(
-        "4.47.0"
-    ), f"transformers >= 4.47.0 required, got {transformers.__version__}"
+        "4.46.0"
+    ), f"transformers >= 4.46.0 required, got {transformers.__version__}"
 
 
 def test_trl_lazy_load_availability():
