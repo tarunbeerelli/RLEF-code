@@ -17,11 +17,12 @@ echo "[3/6] Pre-installing CUDA 12.4 Torch binaries inside virtualenv..."
 # This ensures Poetry doesn't try to pull a mismatched CPU variant
 #poetry run pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124
 sudo pip uninstall xgboost transformer_engine flash_attn pynvml opencv-python-headless -y
-pip install openrlhf[vllm]
+poetry run pip install openrlhf[vllm]
 
 echo "[4/6] Installing dependencies..."
 # Installs remaining locks from pyproject.toml without breaking our torch base
 poetry install --without prod
+export PYTHONPATH=/workspace/src:/workspace:$PYTHONPATH
 
 echo "[5/6] Overlaying optimized LLM stack & NumPy fix..."
 # Force pinning the heavy runtimes to guarantee architectural compatibility
@@ -29,11 +30,25 @@ echo "[5/6] Overlaying optimized LLM stack & NumPy fix..."
 #poetry run pip install "numpy<2.0.0" soxr --force-reinstall
 
 echo "[6/6] Compiling Protobuf Services for gRPC..."
-poetry run python3 -m grpc_tools.protoc -I. --python_out=src/rlef --grpc_python_out=src/rlef ./reward.proto
+poetry run python3 -m grpc_tools.protoc \
+  -I=src/rlef \
+  --python_out=src/rlef \
+  --grpc_python_out=src/rlef \
+  src/rlef/reward.proto
 
 echo "=== STEP 0.0: RUNNING VERIFICATION SWEEP & DIRECTORY PURGE ==="
 bash scripts/download_apps.sh
-poetry run python clean_and_optimize_dataset.py
+poetry run python3 clean_and_optimize_dataset.py
+poetry run python3 src/rlef/prepare_openrlhf_data.py
+
+poetry run python3 src/rlef/grpc_reward_server.py
+
+poetry run wandb login
+hf auth login
+bash scripts/run_grpo_docker.sh
+
+
+
 
 
 echo "=== SMOKE TEST ==="
