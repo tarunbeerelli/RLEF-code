@@ -1,33 +1,33 @@
+"""
+prepare_openrlhf_data.py
+Converts the APPS dataset into the flat JSONL format required by OpenRLHF.
+"""
+
 import json
 from pathlib import Path
 
 from rlef.data import load_apps_split
+from rlef.prompt import TURN_1_ORACLE_PROMPT
 
 
-def export_prompts_for_openrlhf(data_dir: str, output_path: str):
-    problems = load_apps_split(data_dir, split="train")
+def main():
+    # Load your existing dataset
+    problems = load_apps_split("data/raw/APPS", split="train")
 
-    output_file = Path(output_path)
-    output_file.parent.mkdir(exist_ok=True, parents=True)
+    output_file = Path("data/openrlhf_apps_train.jsonl")
+    output_file.parent.mkdir(exist_ok=True)
 
     with open(output_file, "w") as f:
-        for prob in problems:
-            # Package test cases alongside the prompt to feed OpenRLHF's label tracking
-            payload = {
-                "prompt": f"System: You are an expert programming agent. Implement the solution inside a code block.\nHuman: {prob.prompt}\nAssistant:",
-                "label": json.dumps(
-                    {
-                        "inputs": prob.inputs,
-                        "outputs": prob.outputs,
-                        "fn_name": prob.fn_name,
-                        "difficulty": prob.difficulty,
-                    }
-                ),
-            }
-            f.write(json.dumps(payload) + "\n")
+        for p in problems:
+            # We seed the initial trajectory state with the Oracle Prompt
+            prompt_text = f"{TURN_1_ORACLE_PROMPT}\n\nProblem:\n{p.question}"
 
-    print(f"Exported {len(problems)} prompts to {output_path}")
+            # OpenRLHF expects a dictionary with a 'prompt' key
+            row = {"prompt": prompt_text, "problem_id": p.problem_id}
+            f.write(json.dumps(row) + "\n")
+
+    print(f"Successfully exported {len(problems)} trajectory prompts to {output_file}")
 
 
 if __name__ == "__main__":
-    export_prompts_for_openrlhf("data/processed", "data/openrlhf_prompts.jsonl")
+    main()
