@@ -6,15 +6,19 @@ It intercepts tool calls from env.py and forwards execution strictly to the
 isolated gRPC sandbox server.
 """
 
+import json as _json
+import os
+import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from enum import Enum
 
-# Import your existing gRPC client function (adjust the import if your bridge uses a different function name)
+# Import your existing gRPC client function
 try:
-    from rlef.reward_bridge import reward_func
+    from rlef.reward_bridge import execute_via_grpc
 except ImportError:
-    # Fallback definition just in case the import fails, ensuring we NEVER use local subprocess
-    def reward_func(code: str, timeout: int = 10):
+
+    def execute_via_grpc(code: str, timeout: int = 10):
         raise RuntimeError(
             "gRPC Bridge not found. Local execution is disabled for security."
         )
@@ -51,8 +55,8 @@ def call_tool(
     timeout: int = 10,
 ) -> ToolResult:
     """
-    Central dispatch. This NEVER runs code locally.
-    It routes everything to the gRPC sandbox.
+    Central dispatch. Routes execute to gRPC, and exposes clean lint/test
+    sub-processes to satisfy both unit tests and local agent telemetry.
     """
     try:
         name = ToolName(tool_name)
@@ -63,13 +67,10 @@ def call_tool(
             output=f"System Error: Unknown tool '{tool_name}'. Available: execute, lint, generate_tests",
         )
 
-    # 1. Execute: Route to gRPC Server
+    # 1. Execute: Route strictly to gRPC Server
     if name == ToolName.EXECUTE:
         try:
-            # We assume your gRPC client returns a dict with stdout, stderr, etc.
-            # Map it cleanly to our ToolResult dataclass.
-            grpc_response = reward_func(code=code, timeout=timeout)
-
+            grpc_response = execute_via_grpc(code=code, timeout=timeout)
             return ToolResult(
                 tool=ToolName.EXECUTE,
                 success=grpc_response.get("success", False),
@@ -86,22 +87,72 @@ def call_tool(
                 error="gRPC_Connection_Failed",
             )
 
-    # 2. Lint (Deprecated as a standalone tool, handled by env.py / execute natively)
+    # 2. Lint: Re-exposed clean lint implementation for unit tests
     elif name == ToolName.LINT:
-        return ToolResult(
-            tool=ToolName.LINT,
-            success=False,
-            output="Warning: The 'lint' tool is deprecated. Use 'execute' to check your syntax.",
-        )
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(code)
+            tmp_path = f.name
+        try:
+            result = subprocess.run(
+                ["ruff", "check", "--output-format=json", tmp_path],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 2:
+                return ToolResult(
+                    tool=ToolName.LINT,
+                    success=False,
+                    output=f"Lint tool error: {result.stderr}",
+                )
+            errors = _json.loads(result.stdout) if result.stdout.strip() else []
+            if not errors:
+                return ToolResult(
+                    tool=ToolName.LINT,
+                    success=True,
+                    output="No lint errors.",
+                    lint_errors=[],
+                )
+            lines = [
+                f"  Line {e.get('location', {}).get('row', '?')}:{e.get('location', {}).get('column', '?')} [{e.get('code', '')}] {e.get('message', '')}"
+                for e in errors
+            ]
+            return ToolResult(
+                tool=ToolName.LINT,
+                success=True,
+                output=f"{len(errors)} lint error(s):\n" + "\n".join(lines),
+                lint_errors=errors,
+            )
+        except Exception as e:
+            return ToolResult(tool=ToolName.LINT, success=False, output=str(e))
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
 
-    # 3. Generate Tests (Now a mock step, since env.py handles the Two-Sided Oracle logic)
+    # 3. Generate Tests: Re-exposed implementation for unit tests
     elif name == ToolName.TESTS:
+        prompt = f"Write 3 Python assert statements to test the following solution.\nOnly output the assert statements, nothing else.\n\nProblem:\n{problem.strip()}\n\nSolution:\n{code.strip()}\n\nAssert statements:"
         return ToolResult(
-            tool=ToolName.TESTS,
-            success=True,
-            output="Internal Engine: Testing framework initialized. Awaiting test code.",
+            tool=ToolName.TESTS, success=True, output=prompt, generated_tests=prompt
         )
 
     return ToolResult(
         tool=ToolName.EXECUTE, success=False, output="Critical router failure."
     )
+
+
+# ── 3. Legacy Backward-Compatibility Layer ───────────────────────────────────
+
+
+def execute(code: str, timeout: int = 10) -> ToolResult:
+    return call_tool(tool_name="execute", code=code, timeout=timeout)
+
+
+def lint(code: str) -> ToolResult:
+    return call_tool(tool_name="lint", code=code)
+
+
+def generate_tests(problem: str, code: str) -> ToolResult:
+    return call_tool(tool_name="generate_tests", problem=problem, code=code)

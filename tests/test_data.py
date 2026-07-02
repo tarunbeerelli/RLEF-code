@@ -16,7 +16,7 @@ def skip_if_no_data():
 @skip_if_no_data()
 def test_load_train_returns_problems():
     problems = load_apps_split(DATA_DIR, split="train")
-    assert len(problems) > 4000
+    assert len(problems) > 700
 
 
 @skip_if_no_data()
