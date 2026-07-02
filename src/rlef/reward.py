@@ -276,7 +276,7 @@ def execution_reward(
     inputs: list[str],
     outputs: list[str],
     fn_name: str | None = None,
-    timeout: int = 10,
+    timeout: int = 2,
     difficulty: str | list[str] = "introductory",
     current_turn: int = 1,
     ablation_cfg: dict | None = None,
@@ -337,8 +337,17 @@ def execution_reward(
     if ablation_cfg.get("use_multi_turn", True):
         turn_penalty = (current_turn - 1) * 0.05
 
+    total_lines = max(1, len(code.split("\n")))
+    num_syntax_issues = error_types.count("SyntaxError")
+    lint_score = 1.0 - (num_syntax_issues / total_lines)
+
     final_reward = (
-        base_reward + progress_bonus + compile_bonus + error_penalty - turn_penalty
+        base_reward
+        + progress_bonus
+        + compile_bonus
+        + error_penalty
+        - turn_penalty
+        + (0.2 * max(0.0, lint_score))
     )
 
     difficulty_scales = {"introductory": 1.0, "interview": 1.2, "competition": 1.5}
