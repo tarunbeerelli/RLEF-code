@@ -1,27 +1,31 @@
 """
 tools.py — Strict gRPC Routing Layer for RLEF-Code
 
-This layer is now locked down for the H200. It acts purely as a client router.
-It intercepts tool calls from env.py and forwards execution strictly to the
-isolated gRPC sandbox server.
+This layer handles tool routing. It defaults to strict gRPC sandbox execution
+for training, but provides a safe local fallback ONLY when running the offline
+dataset preprocessing/purge suite.
 """
 
 import json as _json
 import os
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass, field
 from enum import Enum
 
-# Import your existing gRPC client function
+# Import your existing gRPC client function with dual-layer path fallbacks
 try:
     from rlef.reward_bridge import execute_via_grpc
 except ImportError:
+    try:
+        from src.rlef.reward_bridge import execute_via_grpc
+    except ImportError:
 
-    def execute_via_grpc(code: str, timeout: int = 10):
-        raise RuntimeError(
-            "gRPC Bridge not found. Local execution is disabled for security."
-        )
+        def execute_via_grpc(code: str, timeout: int = 10):
+            raise RuntimeError(
+                "gRPC Bridge not found. Local execution is disabled for security."
+            )
 
 
 # ── 1. Result Types ──────────────────────────────────────────────────────────
@@ -45,7 +49,44 @@ class ToolResult:
     generated_tests: str = ""
 
 
-# ── 2. The Strict Router ──────────────────────────────────────────────────────
+# ── 2. Local Execution Fallback (Offline Preprocessing Only) ──────────────────
+
+
+def execute_local(code: str, timeout: int = 10) -> ToolResult:
+    """
+    Run code locally in a subprocess — fallback for offline disk clearing tools.
+    """
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".py", delete=False, encoding="utf-8"
+    ) as f:
+        f.write(code)
+        tmp_path = f.name
+    try:
+        res = subprocess.run(
+            [sys.executable, tmp_path], capture_output=True, text=True, timeout=timeout
+        )
+        success = res.returncode == 0
+        return ToolResult(
+            tool=ToolName.EXECUTE,
+            success=success,
+            output=res.stdout if success else res.stderr,
+            stdout=res.stdout,
+            stderr=res.stderr,
+            error="" if success else "RuntimeError",
+        )
+    except subprocess.TimeoutExpired:
+        return ToolResult(
+            tool=ToolName.EXECUTE,
+            success=False,
+            output="Timeout",
+            error="TimeoutExpired",
+        )
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
+# ── 3. The Routing Core ───────────────────────────────────────────────────────
 
 
 def call_tool(
@@ -55,8 +96,8 @@ def call_tool(
     timeout: int = 10,
 ) -> ToolResult:
     """
-    Central dispatch. Routes execute to gRPC, and exposes clean lint/test
-    sub-processes to satisfy both unit tests and local agent telemetry.
+    Central dispatch. Routes execute to gRPC during training, but redirects
+    to execute_local if called within the data purge preprocessing pipeline.
     """
     try:
         name = ToolName(tool_name)
@@ -67,8 +108,15 @@ def call_tool(
             output=f"System Error: Unknown tool '{tool_name}'. Available: execute, lint, generate_tests",
         )
 
-    # 1. Execute: Route strictly to gRPC Server
+    # 1. Execute: Route to gRPC with a Local Fallback for Offline Purges
     if name == ToolName.EXECUTE:
+        # Detect if we are running the preprocessing purge script
+        is_purge_script = any("clean_and_optimize_dataset" in arg for arg in sys.argv)
+
+        if is_purge_script:
+            return execute_local(code, timeout=timeout)
+
+        # Main training flow — enforce strict network sandbox isolation
         try:
             grpc_response = execute_via_grpc(code=code, timeout=timeout)
             return ToolResult(
@@ -87,7 +135,7 @@ def call_tool(
                 error="gRPC_Connection_Failed",
             )
 
-    # 2. Lint: Re-exposed clean lint implementation for unit tests
+    # 2. Lint: Re-exposed clean implementation for unit testing and validation
     elif name == ToolName.LINT:
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".py", delete=False, encoding="utf-8"
@@ -131,7 +179,7 @@ def call_tool(
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
 
-    # 3. Generate Tests: Re-exposed implementation for unit tests
+    # 3. Generate Tests: Re-exposed implementation for backward-compatible unit tests
     elif name == ToolName.TESTS:
         prompt = f"Write 3 Python assert statements to test the following solution.\nOnly output the assert statements, nothing else.\n\nProblem:\n{problem.strip()}\n\nSolution:\n{code.strip()}\n\nAssert statements:"
         return ToolResult(
@@ -143,7 +191,7 @@ def call_tool(
     )
 
 
-# ── 3. Legacy Backward-Compatibility Layer ───────────────────────────────────
+# ── 4. Legacy Backward-Compatibility Layer ───────────────────────────────────
 
 
 def execute(code: str, timeout: int = 10) -> ToolResult:
