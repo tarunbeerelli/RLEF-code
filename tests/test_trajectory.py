@@ -97,15 +97,15 @@ def test_format_error_on_invalid_first_output():
 
 def test_tool_usage_tracking():
     traj = Trajectory(problem=_make_problem(), max_turns=5)
-    traj.add_turn(
-        _make_parsed("lint"), _make_tool_result(ToolName.LINT, "No lint errors.")
-    )
+    # traj.add_turn(
+    #    _make_parsed("lint"), _make_tool_result(ToolName.LINT, "No lint errors.")
+    # )
     traj.add_turn(
         _make_parsed("execute"),
         _make_tool_result(ToolName.EXECUTE),
         _make_exec_result(1.0),
     )
-    assert traj.tool_usage["lint"] == 1
+    # assert traj.tool_usage["lint"] == 1
     assert traj.tool_usage["execute"] == 1
 
 

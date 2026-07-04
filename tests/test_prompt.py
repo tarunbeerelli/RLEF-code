@@ -74,11 +74,11 @@ def test_parse_output_extracts_valid_xml_blocks():
 
 def test_parse_output_ignores_xml_whitespace_and_case():
     """Ensures parser isolates values regardless of structural spacing or character case."""
-    raw_response = "<TOOL>\n  lint\n</TOOL>\n<code>\nx = 5\n</code>"
+    raw_response = "<TOOL>\n  execute\n</TOOL>\n<code>\nx = 5\n</code>"
     parsed = parse_output(raw_response)
 
     assert parsed.is_valid is True
-    assert parsed.tool == "lint"
+    assert parsed.tool == "execute"
     assert parsed.code == "x = 5"
 
 

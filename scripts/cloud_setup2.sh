@@ -14,7 +14,7 @@ echo "[3/6] Cleaning conflicting system packages & setting up base framework..."
 sudo pip uninstall xgboost transformer_engine flash_attn pynvml opencv-python-headless -y
 
 # Force the specific openrlhf/vllm combo into the virtualenv scope
-poetry run pip install openrlhf[vllm]
+poetry run pip install "openrlhf[vllm]>=0.6.3,<0.7.0"
 
 echo "[4/6] Installing dependencies..."
 poetry install --without prod
