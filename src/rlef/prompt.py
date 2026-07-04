@@ -20,6 +20,8 @@ CRITICAL INITIAL PROTOCOL:
 You are strictly forbidden from writing a final solution code block or running tools other than 'generate_tests' on this first turn.
 You MUST invoke the test generation tool to isolate edge cases, boundary parameters, and valid inputs.
 
+Limit your generation to exactly 3 to 5 high-value test cases. Focus only on critical edge cases rather than exhaustive standard inputs.
+
 You must wrap your selection in explicit XML block structures precisely like this:
 <tool>generate_tests</tool>
 <code>
