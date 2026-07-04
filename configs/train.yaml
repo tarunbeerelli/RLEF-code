@@ -1,25 +1,9 @@
 model_name: "Qwen/Qwen2.5-Coder-7B-Instruct"
-data_dir: "data/raw/APPS"
-difficulties: ["introductory", "interview", "competition"]
+dataset_path: "./data/openrlhf_apps_data.jsonl"
 train_split: "train"
 max_turns: 5
-reward_type: "continuous"
-shaped: true
-credit_type: "step"
-num_generations: 8
-temperature: 0.9
-kl_coef: 0.02
-max_prompt_length: 1024
-max_new_tokens: 512
-learning_rate: 5.0e-5
-vllm_gpu_memory_utilization: 0.15
-per_device_batch: 1
-gradient_accumulation_steps: 8
 num_epochs: 3
-bf16: true
-gradient_checkpointing: true
-logging_steps: 5
-save_steps: 100
+learning_rate: 5.0e-6
 output_dir: "./checkpoints"
 wandb_project: "rlef-code"
 wandb_entity: "tarunbeerelli-northeastern-university"
@@ -30,4 +14,4 @@ ablation:
   use_step_credit: true
   use_normalization: true
   use_multi_turn: true
-  use_lint_bonus: true
+  use_lint_bonus: false  # <-- Disabled since we removed the lint tool

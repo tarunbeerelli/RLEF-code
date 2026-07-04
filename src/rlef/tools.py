@@ -110,13 +110,10 @@ def call_tool(
 
     # 1. Execute: Route to gRPC with a Local Fallback for Offline Purges
     if name == ToolName.EXECUTE:
-        # Detect if we are running the preprocessing purge script
-        is_purge_script = any("clean_and_optimize_dataset" in arg for arg in sys.argv)
-
-        if is_purge_script:
-            return execute_local(code, timeout=timeout)
+        return execute_local(code, timeout=timeout)
 
         # Main training flow — enforce strict network sandbox isolation
+        """
         try:
             grpc_response = execute_via_grpc(code=code, timeout=timeout)
             return ToolResult(
@@ -134,6 +131,7 @@ def call_tool(
                 output=f"Sandbox Connection Error: {str(e)}",
                 error="gRPC_Connection_Failed",
             )
+        """
 
     # 2. Lint: Re-exposed clean implementation for unit testing and validation
     elif name == ToolName.LINT:

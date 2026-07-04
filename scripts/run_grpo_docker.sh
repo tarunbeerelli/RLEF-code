@@ -31,8 +31,8 @@ python3 -m openrlhf.cli.train_ppo_ray \
   --ds.enable_sleep \
   --ds.attn_implementation sdpa \
   --actor.model_name_or_path Qwen/Qwen2.5-Coder-7B-Instruct \
-  --reward.remote_url localhost:50051 \
   --data.prompt_dataset ./data/openrlhf_apps_train.jsonl \
+  --max_turn 5 \
   --data.input_key prompt \
   --data.apply_chat_template \
   --ckpt.output_dir ./checkpoint/rlef-7b-grpo \

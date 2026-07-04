@@ -28,20 +28,19 @@ You must wrap your selection in explicit XML block structures precisely like thi
 """
 
 SUBSEQUENT_TURNS_PROMPT = """You are an expert Python programmer operating in a multi-turn execution sandbox.
-Review the user's test-case criteria, compile errors, or lint feedback.
+Review the user's test-case criteria, runtime errors, or execution feedback.
 
 Iterate on your implementation using our operational tool layer.
 Available tools:
-- <tool>execute</tool> : Evaluates your functional code against custom test criteria.
-- <tool>lint</tool>    : Runs formatting check guards via Ruff to clean syntax.
+- <tool>execute</tool> : Evaluates your functional code against the provided test criteria.
 
 CRITICAL INSTRUCTION:
-Before submitting code via <tool>execute</tool>, you should invoke <tool>lint</tool> to clean code blocks, clear python runtime type violations, or fix syntactic issues.
+Review any execution errors or failed test cases provided in the previous turn. Use that feedback to debug and refine your solution.
 
 You MUST wrap your tool calls in explicit XML block structures precisely like this:
-<tool>lint</tool>
+<tool>execute</tool>
 <code>
-# Your Python code to lint or run goes here
+# Your Python code to run goes here
 </code>
 """
 
@@ -57,7 +56,7 @@ Continue solving. Use <tool>execute</tool> when your code adjustments are ready.
 
 @dataclass
 class ParsedOutput:
-    tool: str | None  # "execute", "lint", "generate_tests", or None if parse failed
+    tool: str | None  # "execute", "generate_tests", or None if parse failed
     code: str | None  # extracted code string, or None if parse failed
     raw: str  # original unmutated model token generation string
 
@@ -69,8 +68,6 @@ class ParsedOutput:
     def tool_name(self) -> ToolName | None:
         if self.tool == "execute":
             return ToolName.EXECUTE
-        if self.tool == "lint":
-            return ToolName.LINT
         if self.tool == "generate_tests":
             return ToolName.TESTS
         return None
@@ -93,19 +90,11 @@ FEW_SHOT_ALIGNMENT_HISTORY = [
     },
     {
         "role": "assistant",
-        "content": "<tool>lint</tool>\n<code>\ndef double_it(x):\n  # Check formatting\n  return x*2\n</code>",
-    },
-    {
-        "role": "user",
-        "content": "Tool: lint\nResult:\n0 formatting violations found. Code syntactically valid.",
-    },
-    {
-        "role": "assistant",
         "content": "<tool>execute</tool>\n<code>\ndef double_it(x):\n    return x * 2\n</code>",
     },
     {
         "role": "user",
-        "content": "Tool: execute\nResult:\nPass rate: 1.0. All custom testing vectors evaluated successfully.",
+        "content": "Tool: execute\nResult:\nExecution Pass Rate: 100.0%. All custom testing vectors evaluated successfully.",
     },
 ]
 
@@ -164,7 +153,7 @@ def parse_output(text: str) -> ParsedOutput:
     # Parse explicit XML structures
     tool_match = re.search(r"<tool>\s*(\w+)\s*</tool>", text, re.IGNORECASE)
     xml_tool = tool_match.group(1).lower().strip() if tool_match else None
-    valid_tools = {"execute", "lint", "generate_tests"}
+    valid_tools = {"execute", "generate_tests"}
 
     code_match = re.search(r"<code>\s*(.*?)\s*</code>", text, re.DOTALL)
     xml_code = code_match.group(1).strip() if code_match else None
