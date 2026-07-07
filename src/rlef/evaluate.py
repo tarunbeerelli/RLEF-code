@@ -1,228 +1,210 @@
 """
-evaluate.py — High-Throughput Stratified Evaluation Script
-Ingests raw APPS test folders, formats them into OpenRLHF style prompts,
-and uses vLLM batched inference to evaluate the model.
+evaluate.py — Asynchronous Rollout Evaluator
+Calculates pass@1 and pass@N using the locked environment physics.
+Logs final macro evaluation suites directly to Weights & Biases.
 """
 
+import asyncio
 import json
-import os
-import random
-import re
-from collections import defaultdict
-
-from rlef.data import APPSProblem
-from rlef.prompt import format_prompt
-
-# Import your native execution sandbox and formatting tools
+import yaml
+import wandb
 from rlef.reward import execution_reward
-from transformers import AutoTokenizer
-from vllm import LLM, SamplingParams
+from rlef.prompt import parse_output
+from vllm import AsyncEngineArgs, AsyncLLMEngine, SamplingParams
 from vllm.lora.request import LoRARequest
 
-# ─── 1. RAW DIRECTORY PARSING & STRATIFICATION ───────────────────────────
+"""
+# ─── 1. INLINE PARSER ────────────────────────────────────────────────────────
+def parse_output(text: str) -> dict:
+    code_match = re.search(r"<code>\s*(.*?)\s*</code>", text, re.DOTALL | re.IGNORECASE)
+    return {
+        "code": code_match.group(1).strip() if code_match else None,
+        "is_valid": bool(code_match)
+    }
+"""
 
 
-def load_raw_apps_and_stratify(test_dir_path: str, samples_per_difficulty: int = 250):
-    """Parses raw APPS folders, extracts metadata/tests, and stratifies."""
-    difficulties = defaultdict(list)
+# ─── 2. EVALUATION EPISODE ───────────────────────────────────────────────────
+async def evaluate_single_episode(
+    prompt_text: str,
+    problem_data: dict,
+    vllm_engine,
+    lora_req,
+    sampling_params,
+    ablation_cfg,
+):
+    current_context = prompt_text
+    max_turns = ablation_cfg.get("max_turns", 5)
+    feedback_type = ablation_cfg.get("feedback_type", "last_failed")
 
-    # Iterate through problem directories (e.g., 0000, 0001)
-    for problem_id in os.listdir(test_dir_path):
-        prob_path = os.path.join(test_dir_path, problem_id)
-        if not os.path.isdir(prob_path):
+    inputs = problem_data.get("inputs", [])
+    outputs = problem_data.get("outputs", [])
+
+    pass_at_1 = 0
+    final_pass_rate = 0.0
+
+    for turn in range(max_turns):
+        request_generator = vllm_engine.generate(
+            prompt=current_context,
+            sampling_params=sampling_params,
+            request_id=f"eval_{problem_data['problem_id']}_{turn}",
+            lora_request=lora_req,
+        )
+
+        final_result = None
+        async for res in request_generator:
+            final_result = res
+
+        completion = final_result.outputs[0].text
+        parsed = parse_output(completion)
+
+        if not parsed["is_valid"]:
+            current_context += f"{completion}\nUser: System Result:\nCRITICAL ERROR: Invalid format. Use <code>...</code>.\nAssistant:\n"
             continue
 
-        try:
-            # 1. Read Metadata
-            with open(os.path.join(prob_path, "metadata.json"), "r") as f:
-                meta = json.load(f)
-                diff = meta.get("difficulty", "unknown").lower()
+        # Execute Code
+        exec_result = await asyncio.to_thread(
+            execution_reward,
+            code=parsed["code"],
+            inputs=inputs,
+            outputs=outputs,
+            shaped=False,
+        )
 
-            # 2. Read Question
-            with open(os.path.join(prob_path, "question.txt"), "r") as f:
-                question = f.read()
+        final_pass_rate = exec_result.pass_rate
 
-            # 3. Read Hidden Test Cases
-            io_path = os.path.join(prob_path, "input_output.json")
-            if os.path.exists(io_path):
-                with open(io_path, "r") as f:
-                    io_data = json.load(f)
-                    inputs = io_data.get("inputs", [])
-                    outputs = io_data.get("outputs", [])
-                    fn_name = io_data.get("fn_name", None)
+        # Track Zero-Shot pass@1
+        if turn == 0 and final_pass_rate == 1.0:
+            pass_at_1 = 1
+
+        if final_pass_rate == 1.0:
+            break
+        else:
+            if feedback_type == "last_failed":
+                feedback_str = f"Execution Pass Rate: {final_pass_rate * 100}%\n"
+                if len(inputs) > 0:
+                    feedback_str += f"Failed on test case:\n- Input: {inputs[0]}\n- Expected Output: {outputs[0]}"
             else:
-                inputs, outputs, fn_name = [], [], None
+                feedback_str = (
+                    f"Execution Pass Rate: {final_pass_rate * 100}%. Please revise."
+                )
 
-            problem_data = {
-                "problem_id": problem_id,
-                "difficulty": diff,
-                "question": question,
-                "inputs": inputs,
-                "outputs": outputs,
-                "fn_name": fn_name,
-            }
+            current_context += (
+                f"{completion}\nUser: System Result:\n{feedback_str}\nAssistant:\n"
+            )
 
-            if diff in ["introductory", "interview", "competition"]:
-                difficulties[diff].append(problem_data)
-
-        except Exception:
-            # Silently skip malformed problem folders
-            continue
-
-    sampled_dataset = []
-    print("\n--- Stratified Sampling from Raw APPS ---")
-    for diff in ["introductory", "interview", "competition"]:
-        available = len(difficulties[diff])
-        take = min(samples_per_difficulty, available)
-        sampled = random.sample(difficulties[diff], take)
-        sampled_dataset.extend(sampled)
-        print(f"{diff.capitalize()}: {take} samples (from {available} available)")
-
-    random.shuffle(sampled_dataset)
-    return sampled_dataset
+    return {
+        "pass_at_1": pass_at_1,
+        "pass_at_N": 1 if final_pass_rate == 1.0 else 0,
+        "final_pass_rate": final_pass_rate,
+        "turns_taken": turn + 1,
+    }
 
 
-# ─── 2. OPENRLHF STRING FORMATTING ───────────────────────────────────────
+# ─── 3. MASTER EVAL LOOP ─────────────────────────────────────────────────────
+async def main():
+    with open("configs/train.yaml", "r") as f:
+        cfg = yaml.safe_load(f)
 
+    eval_cfg = cfg.get("evaluation", {})
+    ablation_cfg = cfg.get("ablation", {})
+    max_turns = ablation_cfg.get("max_turns", 5)
 
-def format_to_openrlhf_strings(sampled_dataset, tokenizer):
-    """Converts raw problem dicts into token-ready OpenRLHF-style strings."""
-    print("\nFormatting prompts via Qwen Chat Template...")
+    dataset_path = eval_cfg.get("dataset_path", "./data/apps_eval.jsonl")
+    lora_path = eval_cfg.get("lora_path", "./checkpoint/active_lora")
 
-    formatted_dataset = []
-    for data in sampled_dataset:
-        # Create the dataclass object expected by your prompt.py
-        problem_obj = APPSProblem(
-            problem_id=data["problem_id"],
-            question=data["question"],
-            difficulty=data["difficulty"],
-            inputs=data["inputs"],
-            outputs=data["outputs"],
-        )
+    dataset = []
+    with open(dataset_path, "r") as f:
+        for line in f:
+            dataset.append(json.loads(line))
 
-        # Get the asymmetric role dictionary from your prompt.py
-        messages = format_prompt(problem_obj)
+    print(f"Loaded {len(dataset)} evaluation problems from {dataset_path}")
+    print(f"Targeting LoRA checkpoint: {lora_path}")
 
-        # Apply Qwen's specific chat template tokens
-        prompt_string = tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
+    # Initialize W&B with evaluation metadata
+    eval_tags = cfg.get("tags", []).copy()
+    if "eval" not in eval_tags:
+        eval_tags.append("eval")
 
-        # Inject the compiled string back into the dict
-        data["prompt"] = prompt_string
-        formatted_dataset.append(data)
-
-    return formatted_dataset
-
-
-# ─── 3. EXTRACTION LOGIC ─────────────────────────────────────────────────
-
-
-def extract_final_submission(model_output_string: str) -> str:
-    """Ignores generated tests and grabs the final execution block for grading."""
-    execute_blocks = re.findall(
-        r"<tool>\s*execute\s*</tool>\s*<code>\s*(.*?)\s*</code>",
-        model_output_string,
-        re.IGNORECASE | re.DOTALL,
+    wandb.init(
+        project=cfg.get("wandb_project", "rlef-code"),
+        entity=cfg.get("wandb_entity", "tarunbeerelli-northeastern-university"),
+        config=cfg,
+        tags=eval_tags,
+        job_type="evaluation",
     )
 
-    if execute_blocks:
-        return execute_blocks[-1].strip()
-    return None
-
-
-# ─── 4. THE MASTER EVALUATION LOOP ───────────────────────────────────────
-
-
-def main():
-    test_dir_path = "data/raw/APPS/test"  # Ensure this points to the unpacked folder
-    lora_checkpoint_path = "./checkpoints/epoch_120"
-    model_name = "Qwen/Qwen2.5-Coder-7B-Instruct"
-
-    # 1. Load and stratify raw folders
-    raw_dataset = load_raw_apps_and_stratify(test_dir_path, samples_per_difficulty=250)
-
-    # 2. Format to OpenRLHF strings
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    dataset = format_to_openrlhf_strings(raw_dataset, tokenizer)
-
-    print("\nInitializing vLLM Batched Engine...")
-    llm = LLM(
-        model=model_name,
+    print("Initializing vLLM Engine (Read-Only Mode)...")
+    engine_args = AsyncEngineArgs(
+        model="Qwen/Qwen2.5-Coder-7B-Instruct",
+        enable_prefix_caching=True,
         enable_lora=True,
         max_lora_rank=16,
-        gpu_memory_utilization=0.90,
+        gpu_memory_utilization=0.60,
         max_model_len=4096,
     )
+    vllm_engine = AsyncLLMEngine.from_engine_args(engine_args)
 
     sampling_params = SamplingParams(
-        temperature=0.0,
-        max_tokens=1024,
-        stop=["</tool>"],
+        temperature=0.0,  # Greedy decoding for reliable benchmark execution
+        max_tokens=512,
+        stop=cfg.get("stop_tokens", ["</code>"]),
         include_stop_str_in_output=True,
     )
 
-    prompts = [data["prompt"] for data in dataset]
-    active_lora = LoRARequest("eval_policy", 1, lora_checkpoint_path)
-
-    print(f"\nGenerating responses for {len(prompts)} problems...")
-    outputs = llm.generate(prompts, sampling_params, lora_request=active_lora)
-
-    print("\nStarting local sandbox execution...")
-    results_by_difficulty = {
-        "introductory": {"pass": 0, "fail": 0, "format_error": 0},
-        "interview": {"pass": 0, "fail": 0, "format_error": 0},
-        "competition": {"pass": 0, "fail": 0, "format_error": 0},
-    }
-
-    for i, output in enumerate(outputs):
-        generated_text = output.outputs[0].text
-        problem_data = dataset[i]
-        diff = problem_data.get("difficulty", "unknown").lower()
-
-        extracted_code = extract_final_submission(generated_text)
-
-        if not extracted_code:
-            results_by_difficulty[diff]["format_error"] += 1
-            continue
-
-        exec_result = execution_reward(
-            code=extracted_code,
-            inputs=problem_data.get("inputs", []),
-            outputs=problem_data.get("outputs", []),
-            fn_name=problem_data.get("fn_name"),
-        )
-
-        if exec_result.pass_rate == 1.0:
-            results_by_difficulty[diff]["pass"] += 1
-        else:
-            results_by_difficulty[diff]["fail"] += 1
-
-    # ─── 5. REPORTING ────────────────────────────────────────────────────────
-
-    print("\n=== FINAL APPS PASS@1 EVALUATION ===")
-    total_pass = 0
-    total_valid = 0
-
-    for diff, stats in results_by_difficulty.items():
-        attempted = stats["pass"] + stats["fail"] + stats["format_error"]
-        if attempted == 0:
-            continue
-
-        pass_rate = (stats["pass"] / attempted) * 100
-        format_fail_rate = (stats["format_error"] / attempted) * 100
-
-        total_pass += stats["pass"]
-        total_valid += attempted
-
-        print(f"\n{diff.upper()}:")
-        print(f"  Pass@1: {pass_rate:.2f}% ({stats['pass']}/{attempted})")
+    try:
+        active_lora = LoRARequest("eval_policy", 1, lora_path=lora_path)
+    except Exception as e:
         print(
-            f"  Format Failures: {format_fail_rate:.2f}% ({stats['format_error']}/{attempted})"
+            f"Warning: Could not load LoRA at {lora_path}. Evaluating Base Model. Error: {e}"
         )
+        active_lora = None
 
-    print(f"\nOVERALL PASS@1: {(total_pass / total_valid) * 100:.2f}%")
+    semaphore = asyncio.Semaphore(50)
+
+    async def bounded_eval(data):
+        async with semaphore:
+            return await evaluate_single_episode(
+                data["prompt"],
+                data,
+                vllm_engine,
+                active_lora,
+                sampling_params,
+                ablation_cfg,
+            )
+
+    print("\n=== Commencing Evaluation Sweep ===")
+    tasks = [bounded_eval(data) for data in dataset]
+    results = await asyncio.gather(*tasks)
+
+    total = len(results)
+    total_pass_1 = sum(r["pass_at_1"] for r in results)
+    total_pass_n = sum(r["pass_at_N"] for r in results)
+    avg_pass_rate = sum(r["final_pass_rate"] for r in results) / total
+    avg_turns = sum(r["turns_taken"] for r in results) / total
+
+    pass_1_metric = (total_pass_1 / total) * 100
+    pass_n_metric = (total_pass_n / total) * 100
+
+    print("\n=== EVALUATION RESULTS ===")
+    print(f"Total Problems: {total}")
+    print(f"pass@1 (Zero-Shot): {pass_1_metric:.2f}%")
+    print(f"pass@{max_turns} (Multi-Turn): {pass_n_metric:.2f}%")
+    print(f"Average Partial Pass Rate: {avg_pass_rate * 100:.2f}%")
+    print(f"Average Turns Taken: {avg_turns:.2f}")
+
+    # Push structured evaluation metrics to the dashboard
+    wandb.log(
+        {
+            "eval/total_problems": total,
+            "eval/pass_at_1": pass_1_metric,
+            f"eval/pass_at_{max_turns}": pass_n_metric,
+            "eval/avg_partial_pass_rate": avg_pass_rate * 100,
+            "eval/avg_turns_taken": avg_turns,
+        }
+    )
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
+    wandb.finish()

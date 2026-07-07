@@ -1,17 +1,31 @@
-model_name: "Qwen/Qwen2.5-Coder-7B-Instruct"
-dataset_path: "./data/openrlhf_apps_data.jsonl"
-train_split: "train"
-max_turns: 5
-num_epochs: 3
-learning_rate: 5.0e-6
-output_dir: "./checkpoints"
+# configs/train.yaml
+# Run 5: Multi-Turn Baseline with Targeted Last-Failed-Test Feedback
+
+# ─── 1. WANDB & METADATA ─────────────────────────────────────────────────────
 wandb_project: "rlef-code"
 wandb_entity: "tarunbeerelli-northeastern-university"
+tags: ["run_5", "multi_turn", "targeted_feedback", "linear_reward"]
 
-# Ablation Controls
+# ─── 2. TRAINING HYPERPARAMETERS ─────────────────────────────────────────────
+num_epochs: 3
+start_temp: 0.7
+end_temp: 0.2
+batch_size: 50
+stop_tokens: ["</code>"]
+
+# ─── 3. ABLATION SWITCHBOARD ─────────────────────────────────────────────────
 ablation:
-  use_log_reward: true
+  dataset_path: "./data/apps_run_5.jsonl"
+  
+  # Trajectory Limits
+  max_turns: 5
+  
+  # Reward Shaping Toggles
+  use_linear_pass_rate: true
   use_step_credit: true
-  use_normalization: true
-  use_multi_turn: true
-  use_lint_bonus: false  # <-- Disabled since we removed the lint tool
+  use_turn_penalty: true
+  use_feedback_bonus: true
+  
+  # Architecture Toggles
+  use_edge_cases: false           # Keeps the prompt focused purely on <code> execution
+  feedback_type: "last_failed"    # Feeds the model the exact inputs[0] and outputs[0] it failed on

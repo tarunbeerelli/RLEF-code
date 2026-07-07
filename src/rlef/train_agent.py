@@ -1,21 +1,22 @@
 """
-train_agent.py — Custom Asynchronous RLHF Agent Loop
-Executes true interactive multi-turn rollouts using vLLM Prefix Caching
-and updates weights using a single-GPU PyTorch LoRA-toggling strategy.
+train_agent.py — Configurable Asynchronous RLHF Agent Loop
+Executes multi-turn rollouts using vLLM Prefix Caching.
+Fully parameterized for rigorous ablation studies.
 """
 
 import asyncio
 import json
 import os
 import shutil
+from collections import Counter
 
 import torch
 import torch.nn.functional as F
 import wandb
 import yaml
 from peft import LoraConfig, get_peft_model
+from rlef.reward import execution_reward, verify_generated_tests
 from rlef.prompt import parse_output
-from rlef.reward import execution_reward
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from vllm import AsyncEngineArgs, AsyncLLMEngine, SamplingParams
 from vllm.lora.request import LoRARequest
@@ -25,10 +26,10 @@ from vllm.lora.request import LoRARequest
 print("Initializing vLLM Engine (Allocating 50% of H200 VRAM)...")
 engine_args = AsyncEngineArgs(
     model="Qwen/Qwen2.5-Coder-7B-Instruct",
-    enable_prefix_caching=True,  # The secret weapon for multi-turn speed
+    enable_prefix_caching=True,
     enable_lora=True,
     max_lora_rank=16,
-    gpu_memory_utilization=0.50,  # Strictly fence vLLM so PyTorch doesn't OOM
+    gpu_memory_utilization=0.50,
     max_model_len=4096,
 )
 vllm_engine = AsyncLLMEngine.from_engine_args(engine_args)
@@ -38,24 +39,29 @@ tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Coder-7B-Instruct")
 base_model = AutoModelForCausalLM.from_pretrained(
     "Qwen/Qwen2.5-Coder-7B-Instruct",
     torch_dtype=torch.bfloat16,
-    device_map="auto",  # Grabs whatever memory vLLM left behind
+    device_map="auto",
 )
 
-# Attach Trainable Adapters
 lora_config = LoraConfig(r=16, target_modules=["q_proj", "v_proj", "k_proj", "o_proj"])
 policy_model = get_peft_model(base_model, lora_config)
 optimizer = torch.optim.AdamW(policy_model.parameters(), lr=5e-6)
-
-# Force an initial save so vLLM has a file to load from
 policy_model.save_pretrained("./checkpoint/active_lora")
 
+"""
+# ─── 2. INLINE EXTRACTION PARSER ─────────────────────────────────────────────
 
-# ─── 2. THE INTERACTIVE MULTI-TURN ROLLOUT ───────────────────────────────
+def parse_output(text: str) -> dict:
+    code_match = re.search(r"<code>\s*(.*?)\s*</code>", text, re.DOTALL | re.IGNORECASE)
+    edge_match = re.search(r"<edge_cases>\s*(.*?)\s*</edge_cases>", text, re.DOTALL | re.IGNORECASE)
+    
+    return {
+        "code": code_match.group(1).strip() if code_match else None,
+        "edge_cases": edge_match.group(1).strip() if edge_match else None,
+        "is_valid": bool(code_match) # Code is strictly required to proceed
+    }
+"""
 
-# We want vLLM to physically halt generation the moment it closes a tool
-# sampling_params = SamplingParams(
-#    temperature=0.9, max_tokens=512, stop=["</tool>"], include_stop_str_in_output=True
-# )
+# ─── 3. THE INTERACTIVE MULTI-TURN ROLLOUT ───────────────────────────────
 
 
 async def run_single_episode(
@@ -63,110 +69,141 @@ async def run_single_episode(
     problem_data: dict,
     lora_req: LoRARequest,
     sampling_params: SamplingParams,
+    ablation_cfg: dict,
 ):
-    """Handles a single multi-turn episode with Context-Rich Test Case Feedback."""
     current_context = prompt_text
     trajectory_tokens = []
     final_reward = 0.0
-
-    # 1. Initialize the tracker for this episode
     episode_stats = {"execute": 0, "generate_tests": 0, "invalid_format": 0}
 
-    # Extract the hidden test cases from the dataset
     inputs = problem_data.get("inputs", [])
     outputs = problem_data.get("outputs", [])
     fn_name = problem_data.get("fn_name", None)
 
-    for turn in range(5):
-        # Generate via vLLM
-        results = await vllm_engine.generate(
-            current_context,
-            sampling_params,
+    # Pull Ablation Toggles
+    max_turns = ablation_cfg.get("max_turns", 5)
+    use_linear_pass_rate = ablation_cfg.get("use_linear_pass_rate", True)
+    use_step_credit = ablation_cfg.get("use_step_credit", True)
+    use_turn_penalty = ablation_cfg.get("use_turn_penalty", True)
+    use_feedback_bonus = ablation_cfg.get("use_feedback_bonus", True)
+    use_edge_cases = ablation_cfg.get("use_edge_cases", False)
+    feedback_type = ablation_cfg.get("feedback_type", "last_failed")
+
+    previous_pass_rate = 0.0
+
+    for turn in range(max_turns):
+        request_generator = vllm_engine.generate(
+            prompt=current_context,
+            sampling_params=sampling_params,
             request_id=f"req_{problem_data['problem_id']}_{turn}",
             lora_request=lora_req,
-            sampling_params=SamplingParams,
         )
 
-        completion = results.outputs[0].text
+        final_result = None
+        async for res in request_generator:
+            final_result = res
+
+        completion = final_result.outputs[0].text
         trajectory_tokens.append(completion)
 
         parsed = parse_output(completion)
 
-        if not parsed.is_valid:
+        if not parsed["is_valid"]:
             episode_stats["invalid_format"] += 1
-            final_reward = 0.0
-            break
-
-        # 1.2. THE TURN 1 ENFORCER (Close the loophole!)
-        if turn == 0 and parsed.tool != "generate_tests":
-            episode_stats["invalid_format"] += 1
-            feedback_str = "CRITICAL PROTOCOL VIOLATION: You MUST use <tool>generate_tests</tool> on the first turn before executing any code."
+            feedback_str = "CRITICAL ERROR: Invalid format. You must wrap your executable logic inside a <code>...</code> block. Please try again."
             current_context += (
-                f"{completion}\nUser: Tool Result:\n{feedback_str}\nAssistant:\n"
-            )
-            continue  # Force it to loop to Turn 1 and try again
-
-        # 2. Route the Tool Calls
-        if parsed.tool == "generate_tests":
-            episode_stats["generate_tests"] += 1
-            # Feed back a generic success so the model moves on to execution
-            feedback_str = "Tests noted. Use <tool>execute</tool> when ready."
-            current_context += (
-                f"{completion}\nUser: Tool Result:\n{feedback_str}\nAssistant:\n"
+                f"{completion}\nUser: System Result:\n{feedback_str}\nAssistant:\n"
             )
             continue
 
-        elif parsed.tool == "execute":
-            episode_stats["execute"] += 1
+        episode_stats["execute"] += 1
+        step_reward = 0.0
 
-            # Native Local Execution Sandbox (Bypassing gRPC!)
-            exec_result = execution_reward(
-                code=parsed.code,
-                inputs=inputs,
-                outputs=outputs,
-                fn_name=fn_name,
-                shaped=False,  # We want the raw pass rate for the logic check
+        # --- EDGE CASE VERIFICATION (RUNS 6 & 7) ---
+        if use_edge_cases and parsed["edge_cases"]:
+            episode_stats["generate_tests"] += 1
+            test_bonus = await asyncio.to_thread(
+                verify_generated_tests, parsed["edge_cases"], parsed["code"], fn_name
             )
+            step_reward += test_bonus
 
-            step_reward = exec_result.pass_rate
+        # --- EXECUTE MAIN LOGIC ---
+        exec_result = await asyncio.to_thread(
+            execution_reward,
+            code=parsed["code"],
+            inputs=inputs,
+            outputs=outputs,
+            previous_pass_rate=previous_pass_rate,
+            current_turn=turn + 1,
+            shaped=False,
+        )
 
-            if step_reward == 1.0:
-                final_reward = 1.0
-                break
-            else:
-                # CONTEXT-RICH FEEDBACK ARCHITECTURE
-                feedback_str = f"Execution Pass Rate: {step_reward * 100}%\n"
+        pass_rate = exec_result.pass_rate
 
-                if "SyntaxError" in exec_result.error_types:
-                    feedback_str += "Error: Your code threw a SyntaxError or crashed. Check formatting and syntax."
-                elif len(inputs) > 0:
-                    feedback_str += (
-                        f"Hint: Your code failed on this test case:\n"
-                        f"- Input: {inputs[0]}\n"
-                        f"- Expected Output: {outputs[0]}\n"
-                    )
+        # --- CENTRALIZED ABLATION REWARD MATH ---
+        step_reward += (
+            pass_rate if use_linear_pass_rate else (1.0 if pass_rate == 1.0 else 0.0)
+        )
 
-                current_context += (
-                    f"{completion}\nUser: Tool Result:\n{feedback_str}\nAssistant:\n"
+        if use_step_credit and 0.0 < pass_rate < 1.0:
+            step_reward += 0.10
+        if use_turn_penalty:
+            step_reward -= turn * 0.05
+        if use_feedback_bonus and pass_rate > previous_pass_rate and turn > 0:
+            step_reward += 0.10
+
+        previous_pass_rate = pass_rate
+
+        if pass_rate == 1.0:
+            final_reward += step_reward
+            break
+        else:
+            # --- CENTRALIZED ABLATION FEEDBACK ROUTING ---
+            if feedback_type == "none":
+                feedback_str = f"Execution Pass Rate: {pass_rate * 100}%."
+
+            elif feedback_type == "consolidated":
+                err_counts = Counter(exec_result.error_types)
+                err_str = ", ".join([f"{v} {k}" for k, v in err_counts.items()])
+                feedback_str = (
+                    f"Execution Pass Rate: {pass_rate * 100}%. Errors logged: {err_str}"
                 )
 
-                if turn == 4:
-                    final_reward = step_reward  # Partial credit on the final turn
+            elif feedback_type == "last_failed":
+                feedback_str = f"Execution Pass Rate: {pass_rate * 100}%\n"
+                if len(inputs) > 0 and pass_rate < 1.0:
+                    feedback_str += f"Failed on test case:\n- Input: {inputs[0]}\n- Expected Output: {outputs[0]}"
 
-    # Return the stats alongside the trajectories
+            else:  # standard
+                feedback_str = (
+                    f"Execution Pass Rate: {pass_rate * 100}%. Please revise."
+                )
+
+            current_context += (
+                f"{completion}\nUser: System Result:\n{feedback_str}\nAssistant:\n"
+            )
+
+            if turn == max_turns - 1:
+                final_reward += step_reward
+
     return {
         "context": prompt_text,
         "completions": trajectory_tokens,
-        "reward": final_reward,
+        "reward": max(0.0, final_reward),
         "stats": episode_stats,
+        "turns_taken": turn + 1,
+        "final_context_length": len(current_context),
+        "success": 1 if pass_rate == 1.0 else 0,
     }
 
 
-# ─── 3. THE GRPO MATH & LORA-TOGGLE UPDATE ───────────────────────────────
+# ─── 4. THE GRPO MATH & LORA-TOGGLE UPDATE ───────────────────────────────
 
 
 def grpo_update_step(batch_trajectories, beta=0.04):
-    """Calculates advantages and KL penalty using the memory-saving toggle trick."""
+    if not batch_trajectories:
+        return 0.0, 0.0
+
     policy_model.train()
     optimizer.zero_grad()
 
@@ -179,23 +216,19 @@ def grpo_update_step(batch_trajectories, beta=0.04):
     total_kl = 0
 
     for traj, adv in zip(batch_trajectories, advantages):
-        # Flatten the multi-turn transcript into one string for PyTorch
         full_text = traj["context"] + "".join(traj["completions"])
         input_ids = tokenizer(full_text, return_tensors="pt").input_ids.to(
             policy_model.device
         )
 
-        # PASS 1: Get Policy Log-Probs (WITH LoRA active)
         policy_logits = policy_model(input_ids).logits
         policy_logprobs = F.log_softmax(policy_logits, dim=-1)
 
-        # PASS 2: Get Reference Log-Probs (WITHOUT LoRA)
         with policy_model.disable_adapter():
             with torch.no_grad():
                 ref_logits = policy_model(input_ids).logits
                 ref_logprobs = F.log_softmax(ref_logits, dim=-1)
 
-        # Calculate PPO Surrogate Loss + KL Penalty
         kl_div = (
             torch.exp(ref_logprobs - policy_logprobs)
             - (ref_logprobs - policy_logprobs)
@@ -213,103 +246,127 @@ def grpo_update_step(batch_trajectories, beta=0.04):
         total_loss += final_loss.item()
 
     optimizer.step()
-
-    # Save the updated weights so vLLM can load them on the next rollout
     policy_model.save_pretrained("./checkpoint/active_lora")
 
     return total_loss / len(batch_trajectories), total_kl / len(batch_trajectories)
 
 
-# ─── 4. THE MASTER EXECUTION LOOP ────────────────────────────────────────
+# ─── 5. THE MASTER EXECUTION LOOP ────────────────────────────────────────
 
 
 async def main():
-    # Load the YAML config dynamically
     with open("configs/train.yaml", "r") as f:
         cfg = yaml.safe_load(f)
 
-    dataset_path = cfg.get("dataset_path", "./data/openrlhf_apps_train.jsonl")
+    ablation_cfg = cfg.get("ablation", {})
+    # Data path toggle prioritized in ablation config for Phase 1 vs Phase 2 curriculum
+    dataset_path = ablation_cfg.get(
+        "dataset_path", cfg.get("dataset_path", "./data/openrlhf_apps_train.jsonl")
+    )
     epochs = cfg.get("num_epochs", 3)
 
-    # Load your specific APPS subset dataset
     dataset = []
     with open(dataset_path, "r") as f:
         for line in f:
             dataset.append(json.loads(line))
 
-    # Start the W&B Run
     wandb.init(
         project=cfg.get("wandb_project", "rlef-code"),
         entity=cfg.get("wandb_entity", "tarunbeerelli-northeastern-university"),
         config=cfg,
+        tags=cfg.get("tags", []),
     )
 
-    # Restrict to your target runs to keep iteration fast and focused
-    dataset = dataset[:3]
+    print(f"Loaded {len(dataset)} evaluation problems from {dataset_path}.")
 
-    print(f"Loaded {len(dataset)} evaluation problems.")
+    start_temp = cfg.get("start_temp", 0.7)
+    end_temp = cfg.get("end_temp", 0.2)
+    batch_size = cfg.get("batch_size", 50)
+
+    total_batches = (
+        len(dataset) // batch_size + (1 if len(dataset) % batch_size != 0 else 0)
+    ) * epochs
+    global_batch = 0
 
     for epoch in range(epochs):
         print(f"\n=== Starting Epoch {epoch+1} ===")
-        # --- TEMPERATURE ANNEALING ---
-        # Starts at 0.9 (high exploration), decays to 0.2 (high exploitation)
-        start_temp = 0.9
-        end_temp = 0.2
-        # Prevent division by zero if running only 1 epoch
-        decay_factor = epoch / max(1, (epochs - 1))
-        current_temp = start_temp - decay_factor * (start_temp - end_temp)
 
-        print(f"Sampling Temperature set to: {current_temp:.2f}")
+        # Step through the dataset in batches to allow continuous temp decay
+        for i in range(0, len(dataset), batch_size):
+            batch_data = dataset[i : i + batch_size]
 
-        sampling_params = SamplingParams(
-            temperature=current_temp,
-            max_tokens=512,
-            stop=["</tool>"],
-            include_stop_str_in_output=True,
-        )
+            # Smooth Linear Continuous Decay per batch step
+            current_temp = start_temp - (start_temp - end_temp) * (
+                global_batch / max(1, total_batches - 1)
+            )
 
-        # Tell vLLM to use the latest saved LoRA weights for this batch
-        active_lora = LoRARequest("active_policy", 1, "./checkpoint/active_lora")
+            sampling_params = SamplingParams(
+                temperature=current_temp,
+                max_tokens=512,
+                stop=cfg.get("stop_tokens", ["</code>"]),
+                include_stop_str_in_output=True,
+            )
 
-        # 1. Run all episodes asynchronously (Max throughput!)
-        tasks = [
-            run_single_episode(data["prompt"], data, active_lora, sampling_params)
-            for data in dataset
-        ]
-        trajectories = await asyncio.gather(*tasks)
+            active_lora = LoRARequest(
+                "active_policy", 1, lora_path="./checkpoint/active_lora"
+            )
 
-        avg_reward = sum(t["reward"] for t in trajectories) / len(trajectories)
-        print(f"Rollouts Complete. Average Reward: {avg_reward:.2f}")
+            tasks = [
+                run_single_episode(
+                    data["prompt"], data, active_lora, sampling_params, ablation_cfg
+                )
+                for data in batch_data
+            ]
+            trajectories = await asyncio.gather(*tasks)
 
-        # 2. Hand the trajectories over to PyTorch for the GRPO math
-        loss, kl_divergence = grpo_update_step(trajectories)
-        print(f"Update Step Complete. Loss: {loss:.4f}, KL: {kl_divergence:.4f}")
+            avg_reward = sum(t["reward"] for t in trajectories) / max(
+                1, len(trajectories)
+            )
 
-        # 3. Aggregate Tool Stats for Dashboard
-        total_execute = sum(t["stats"]["execute"] for t in trajectories)
-        total_tests = sum(t["stats"]["generate_tests"] for t in trajectories)
-        total_invalid = sum(t["stats"]["invalid_format"] for t in trajectories)
-        current_lr = optimizer.param_groups[0]["lr"]
+            loss, kl_divergence = grpo_update_step(trajectories)
 
-        wandb.log(
-            {
-                "train/loss": loss,
-                "train/kl_divergence": kl_divergence,
-                "train/avg_reward": avg_reward,
-                "train/learning_rate": current_lr,
-                "tools/execute_calls": total_execute,
-                "tools/generate_tests_calls": total_tests,
-                "tools/invalid_format_errors": total_invalid,
-                "train/temperature": current_temp,
-                "epoch": epoch + 1,
-            }
-        )
+            total_execute = sum(t["stats"]["execute"] for t in trajectories)
+            total_tests = sum(t["stats"]["generate_tests"] for t in trajectories)
+            total_invalid = sum(t["stats"]["invalid_format"] for t in trajectories)
 
-        # 4. Save a permanent Historical Checkpoint for this Epoch
+            avg_turns = sum(t["turns_taken"] for t in trajectories) / max(
+                1, len(trajectories)
+            )
+            avg_ctx_len = sum(t["final_context_length"] for t in trajectories) / max(
+                1, len(trajectories)
+            )
+            success_rate = sum(t["success"] for t in trajectories) / max(
+                1, len(trajectories)
+            )
+
+            current_lr = optimizer.param_groups[0]["lr"]
+
+            wandb.log(
+                {
+                    "train/loss": loss,
+                    "train/kl_divergence": kl_divergence,
+                    "train/avg_reward": avg_reward,
+                    "train/learning_rate": current_lr,
+                    "train/temperature": current_temp,
+                    "tools/execute_calls": total_execute,
+                    "tools/generate_tests_calls": total_tests,
+                    "tools/invalid_format_errors": total_invalid,
+                    "metrics/avg_turns": avg_turns,
+                    "metrics/avg_context_length": avg_ctx_len,
+                    "metrics/success_rate": success_rate,
+                    "epoch": epoch + 1,
+                    "global_step": global_batch,
+                }
+            )
+
+            print(
+                f"Batch {global_batch+1}/{total_batches} | Temp: {current_temp:.3f} | Reward: {avg_reward:.2f} | Loss: {loss:.4f}"
+            )
+            global_batch += 1
+
         epoch_dir = f"./checkpoints/epoch_{epoch + 1}"
         os.makedirs(epoch_dir, exist_ok=True)
 
-        # Copy the latest active weights into the permanent epoch folder
         active_path = "./checkpoint/active_lora"
         if os.path.exists(active_path):
             shutil.copytree(active_path, epoch_dir, dirs_exist_ok=True)
@@ -318,3 +375,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    wandb.finish()
