@@ -35,6 +35,8 @@ bash scripts/download_apps.sh
 poetry run python3 clean_and_optimize_dataset.py
 poetry run python3 src/rlef/prepare_openrlhf_data.py
 
+poetry run pytest tests/
+
 echo "=== LAUNCHING BACKGROUND SERVICES ==="
 # Launch reward server safely in background so the script doesn't hang
 poetry run python3 src/rlef/grpc_reward_server.py > reward_server.log 2>&1 &

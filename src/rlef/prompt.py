@@ -1,173 +1,142 @@
 """
-prompt.py — Prompt formatting and model output parsing with Forced Asymmetry.
+prompt.py — Dynamic Context Engine for RLHF Rollouts
 
-Manages asymmetric instruction distributions and XML tag validation rules
-across separate phases of a multi-turn reasoning episode.
+Generates asymmetric prompts and few-shot alignments based on ablation toggles.
+Enforces `<reasoning>`, `<code>`, and conditional `<edge_cases>` protocols.
 """
-
-import re
-from dataclasses import dataclass
 
 from rlef.data import APPSProblem
-from rlef.tools import ToolName
+import re
 
-# ── Forced Asymmetry System Prompts ──────────────────────────────────────────
+# ─── 1. DYNAMIC SYSTEM PROMPT BUILDER ────────────────────────────────────────
 
-TURN_1_ORACLE_PROMPT = """You are an expert Python algorithmic scientist.
-Analyze the user's coding problem description and map out its semantic constraints.
+def build_system_prompt(ablation_cfg: dict) -> str:
+    """Builds the system prompt dynamically based on the current ablation run."""
+    use_edge_cases = ablation_cfg.get("use_edge_cases", False)
+    
+    base_prompt = (
+        "You are an expert Python algorithmic scientist operating in a multi-turn execution sandbox.\n"
+        "Analyze the coding problem and implement a highly optimized solution.\n\n"
+        "CRITICAL INSTRUCTIONS:\n"
+        "1. FORCED CHAIN-OF-THOUGHT: Before writing any code, you MUST 'think out loud'. "
+        "Analyze constraints and edge cases, and wrap your logic explicitly inside a <reasoning>...</reasoning> block.\n"
+    )
 
-CRITICAL INITIAL PROTOCOL:
-You are strictly forbidden from writing a final solution code block or running tools other than 'generate_tests' on this first turn.
-You MUST invoke the test generation tool to isolate edge cases, boundary parameters, and valid inputs.
+    if use_edge_cases:
+        # Runs 6 & 7: Test-Driven Development 
+        base_prompt += (
+            "2. ANCHOR & EXTEND: Extract one sample test case provided in the problem description to act as your ground-truth anchor. "
+            "Generate up to 3 ADDITIONAL high-value edge cases (e.g., empty structures, bounds). "
+            "Wrap your test logic inside an <edge_cases>...</edge_cases> block using Python assert statements.\n"
+            "3. THE DUMMY FUNCTION THREAT: WARNING - Your generated edge cases will be evaluated against a malicious dummy function. "
+            "If you write generic, tautological tests (like `assert True` or `assert type(x) == int`), they will fail the sandbox validation "
+            "and you will be heavily penalized. Your tests must be mathematically rigorous.\n"
+            "4. IMPLEMENTATION: Once you have reasoned and written your edge cases, wrap your functional solution inside a <code>...</code> block.\n"
+        )
+    else:
+        # Runs 1-5: Direct Execution
+        base_prompt += (
+            "2. IMPLEMENTATION: Implement your final solution and wrap it explicitly inside a <code>...</code> block.\n"
+            "3. ITERATION: If your code fails, review the execution errors or failed test cases provided in the next turn and refine your solution.\n"
+        )
 
-Limit your generation to exactly 3 to 5 high-value test cases. Focus only on critical edge cases rather than exhaustive standard inputs.
-
-You must wrap your selection in explicit XML block structures precisely like this:
-<tool>generate_tests</tool>
-<code>
-# Provide your tentative test verification logic here
-</code>
-"""
-
-SUBSEQUENT_TURNS_PROMPT = """You are an expert Python programmer operating in a multi-turn execution sandbox.
-Review the user's test-case criteria, runtime errors, or execution feedback.
-
-Iterate on your implementation using our operational tool layer.
-Available tools:
-- <tool>execute</tool> : Evaluates your functional code against the provided test criteria.
-
-CRITICAL INSTRUCTION:
-Review any execution errors or failed test cases provided in the previous turn. Use that feedback to debug and refine your solution.
-
-You MUST wrap your tool calls in explicit XML block structures precisely like this:
-<tool>execute</tool>
-<code>
-# Your Python code to run goes here
-</code>
-"""
-
-PROBLEM_TEMPLATE = "{question}\n"
-
-FEEDBACK_TEMPLATE = """Tool: {tool}
-Result:
-{output}
-
-Continue solving. Use <tool>execute</tool> when your code adjustments are ready.
-"""
+    return base_prompt
 
 
-@dataclass
-class ParsedOutput:
-    tool: str | None  # "execute", "generate_tests", or None if parse failed
-    code: str | None  # extracted code string, or None if parse failed
-    raw: str  # original unmutated model token generation string
+# ─── 2. FEW-SHOT ALIGNMENT GENERATORS ────────────────────────────────────────
 
-    @property
-    def is_valid(self) -> bool:
-        return self.tool is not None and self.code is not None
+def get_few_shot_history(use_edge_cases: bool) -> list[dict]:
+    """Provides perfectly formatted XML examples to prevent format hallucinations."""
+    
+    if use_edge_cases:
+        return [
+            {
+                "role": "user",
+                "content": "Write a function `double_it(x)` that returns twice the integer input.\nSample: double_it(5) -> 10",
+            },
+            {
+                "role": "assistant",
+                "content": (
+                    "<reasoning>\n"
+                    "The problem requires multiplying an integer by 2. The sample provides an anchor of 5->10. "
+                    "I need to test negative numbers and zero as edge cases.\n"
+                    "</reasoning>\n"
+                    "<edge_cases>\n"
+                    "assert double_it(5) == 10\n"
+                    "assert double_it(0) == 0\n"
+                    "assert double_it(-3) == -6\n"
+                    "</edge_cases>\n"
+                    "<code>\n"
+                    "def double_it(x):\n"
+                    "    return x * 2\n"
+                    "</code>"
+                ),
+            },
+            {
+                "role": "user",
+                "content": "System Result:\nExecution Pass Rate: 100.0%.",
+            }
+        ]
+    else:
+        return [
+            {
+                "role": "user",
+                "content": "Write a function `double_it(x)` that returns twice the integer input.",
+            },
+            {
+                "role": "assistant",
+                "content": (
+                    "<reasoning>\n"
+                    "The problem requires a simple multiplication by 2. I will implement a function that takes `x` and returns `x * 2`.\n"
+                    "</reasoning>\n"
+                    "<code>\n"
+                    "def double_it(x):\n"
+                    "    return x * 2\n"
+                    "</code>"
+                ),
+            },
+            {
+                "role": "user",
+                "content": "System Result:\nExecution Pass Rate: 100.0%.",
+            }
+        ]
 
-    @property
-    def tool_name(self) -> ToolName | None:
-        if self.tool == "execute":
-            return ToolName.EXECUTE
-        if self.tool == "generate_tests":
-            return ToolName.TESTS
-        return None
 
-
-# ── In-Context Few-Shot Realignment Trajectory ─────────────────────────────────
-
-FEW_SHOT_ALIGNMENT_HISTORY = [
-    {
-        "role": "user",
-        "content": "Write a function `double_it(x)` that returns twice the integer input.",
-    },
-    {
-        "role": "assistant",
-        "content": "<tool>generate_tests</tool>\n<code>\ndef test_double():\n    assert double_it(2) == 4\n    assert double_it(-1) == -2\n    assert double_it(0) == 0\n</code>",
-    },
-    {
-        "role": "user",
-        "content": "Tool: generate_tests\nResult:\n3 custom assertions successfully compiled into local sandbox execution parameters.",
-    },
-    {
-        "role": "assistant",
-        "content": "<tool>execute</tool>\n<code>\ndef double_it(x):\n    return x * 2\n</code>",
-    },
-    {
-        "role": "user",
-        "content": "Tool: execute\nResult:\nExecution Pass Rate: 100.0%. All custom testing vectors evaluated successfully.",
-    },
-]
-
-# ── Trajectory Phase Formatting ───────────────────────────────────────────────
-
+# ─── 3. MAIN FORMATTER ───────────────────────────────────────────────────────
 
 def format_prompt(
     problem: APPSProblem,
+    ablation_cfg: dict,
     history: list[dict] | None = None,
 ) -> list[dict]:
     """
-    Format a problem description into a chat message history sequence.
-    Appends strict few-shot examples across turns to align the coder to our XML schema.
+    Constructs the full context window for the vLLM generation request.
+    Injects system prompts, few-shot alignment, and trajectory history.
     """
-    if not history or len(history) == 0:
-        system_content = TURN_1_ORACLE_PROMPT
-        messages = [
-            {"role": "system", "content": system_content},
-            *FEW_SHOT_ALIGNMENT_HISTORY,
-            {
-                "role": "user",
-                "content": PROBLEM_TEMPLATE.format(question=problem.question.strip()),
-            },
-        ]
-    else:
-        system_content = SUBSEQUENT_TURNS_PROMPT
-        messages = [
-            {"role": "system", "content": system_content},
-            *FEW_SHOT_ALIGNMENT_HISTORY,
-            {
-                "role": "user",
-                "content": PROBLEM_TEMPLATE.format(question=problem.question.strip()),
-            },
-        ]
+    use_edge_cases = ablation_cfg.get("use_edge_cases", False)
+    system_content = build_system_prompt(ablation_cfg)
+    few_shot = get_few_shot_history(use_edge_cases)
+
+    # Base Context
+    messages = [
+        {"role": "system", "content": system_content},
+        *few_shot,
+        {"role": "user", "content": f"{problem.question.strip()}\n"},
+    ]
+
+    # Append multi-turn execution logs if they exist
+    if history and len(history) > 0:
         messages.extend(history)
 
     return messages
 
-
-def format_feedback(tool: str, output: str) -> dict:
-    """Format execution output logs back into message sequences."""
+# ─── 4. INLINE EXTRACTION PARSER ─────────────────────────────────────────────
+def parse_output(text: str) -> dict:
+    code_match = re.search(r"<code>\s*(.*?)\s*</code>", text, re.DOTALL | re.IGNORECASE)
+    edge_match = re.search(r"<edge_cases>\s*(.*?)\s*</edge_cases>", text, re.DOTALL | re.IGNORECASE)
+    
     return {
-        "role": "user",
-        "content": FEEDBACK_TEMPLATE.format(tool=tool, output=output.strip()),
+        "code": code_match.group(1).strip() if code_match else None,
+        "edge_cases": edge_match.group(1).strip() if edge_match else None,
+        "is_valid": bool(code_match) # Code is strictly required to proceed
     }
-
-
-# ── Strict Extraction Parser ──────────────────────────────────────────────────
-
-
-def parse_output(text: str) -> ParsedOutput:
-    """
-    Parse model output to extract tools and targeted logic sequences.
-    Strictly parses XML tag declarations to eliminate ambiguous code generation states.
-    """
-    # Parse explicit XML structures
-    tool_match = re.search(r"<tool>\s*(\w+)\s*</tool>", text, re.IGNORECASE)
-    xml_tool = tool_match.group(1).lower().strip() if tool_match else None
-    valid_tools = {"execute", "generate_tests"}
-
-    code_match = re.search(r"<code>\s*(.*?)\s*</code>", text, re.DOTALL)
-    xml_code = code_match.group(1).strip() if code_match else None
-
-    if tool_match or code_match:
-        tool = xml_tool if xml_tool in valid_tools else None
-        return ParsedOutput(tool=tool, code=xml_code, raw=text)
-
-    # Legacy markdown fallback for backwards compatibility or single-shot evaluations
-    md_match = re.search(r"```(?:python)?\s*\n(.*?)\n```", text, re.DOTALL)
-    if md_match:
-        code = md_match.group(1).strip()
-        return ParsedOutput(tool="execute", code=code, raw=text)
-
-    return ParsedOutput(tool=None, code=None, raw=text)

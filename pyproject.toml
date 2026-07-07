@@ -1,72 +1,36 @@
 [tool.poetry]
-name = "rlef-code"
+name = "rlef"
 version = "0.1.0"
-description = "Code generation agent with execution feedback via GRPO"
-authors = ["Tarun Beerelli <tarun99.m@gmail.com>"]
+description = "Reinforcement Learning from Execution Feedback (RLEF)"
+authors = ["Your Name <your.email@example.com>"]
 readme = "README.md"
-packages = [{ include = "rlef", from = "src" }]
-package-mode = true
+packages = [{include = "rlef", from = "src"}]
 
 [tool.poetry.dependencies]
-python = ">=3.10,<4.0"
-torch = ">=2.4.0,<=2.5.1"
-vllm = "0.6.3"
-transformers = "4.46.0"
-peft = "0.13.2"
-trl = "0.14.0"
-numpy = ">=1.26,<2.0.0"
-datasets = ">=4.7.0"
-accelerate = ">=1.4.0"
-pandas = ">=2.0"
-tqdm = ">=4.66"
-evalplus = ">=0.3.0"
-python-dotenv = "^1.2.2"
-e2b-code-interpreter = ">=2.8.0"
-pyyaml = ">=6.0"
-bitsandbytes = ">=0.43.0"
-jupyter = ">=1.0"
-matplotlib = ">=3.8"
-seaborn = ">=0.13"
-regex = "^2026.5.9"
-reportlab = "^5.0.0"
-jupytext = "^1.19.4"
-grpcio = "^1.64.1"
-grpcio-tools = "^1.64.1"
-fastapi = "^0.111.0"
-uvicorn = "^0.30.1"
-pytest = "^8.2.0"
-pytest-asyncio = "^0.23.7"
-wandb = "^0.27.2"
-
-[tool.poetry.group.prod]
-optional = true
-
-[tool.poetry.group.prod.dependencies]
+python = ">=3.10,<3.13"
+torch = "^2.4.0"
+vllm = "^0.6.0"
+transformers = "4.45.2"  # Locked specifically to prevent tokenizer/checkpoint mismatch
+peft = "^0.12.0"
+wandb = "^0.17.0"
+pyyaml = "^6.0.1"
+ray = "^2.34.0"          # Required by vLLM for stable memory partitioning
 
 [tool.poetry.group.dev.dependencies]
-pytest = "^8.0"
-pytest-cov = "^5.0"
-ruff = "^0.4.0"
-pre-commit = "^3.7"
-jupytext = ">=1.16"
-
-[tool.ruff]
-line-length = 88
-extend-exclude = [
-    "src/rlef/reward_pb2.py",
-    "src/rlef/reward_pb2_grpc.py"
-]
-
-[tool.ruff.lint]
-select = ["E", "F", "W", "I"]
-ignore = ["E501", "E402"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-v --tb=short --cov=rlef --cov-report=term-missing"
-pythonpath = ["."]
-markers = ["integration: tests that require external services (E2B API key, network)"]
+pytest = "^8.3.2"
+ruff = "^0.6.1"
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.pytest.ini_options]
+addopts = "--tb=short -v"
+markers = [
+    "unit: Pure logic tests isolated from hardware and external data",
+    "integration: Full compilation sandbox tests requiring subprocesses"
+]
