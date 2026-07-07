@@ -1,7 +1,7 @@
 """
 reward.py — Core Execution Sandbox for RLEF-Code
 
-Acts purely as the environment physics engine. 
+Acts purely as the environment physics engine.
 Calculates raw execution pass rates and evaluates generated test validity.
 Reward shaping (step credits, multi-turn penalties) is handled upstream by train_agent.py.
 """
@@ -12,6 +12,7 @@ import subprocess
 from dataclasses import dataclass
 
 # ── 1. Data Structures ────────────────────────────────────────────────────────
+
 
 @dataclass
 class ExecutionResult:
@@ -24,6 +25,7 @@ class ExecutionResult:
 
 # ── 2. Native Subprocess Isolation ────────────────────────────────────────────
 
+
 def _native_execute(code_str: str, timeout: int = 2) -> tuple[bool, str, str]:
     """Runs code in an isolated subprocess to prevent master thread crashes."""
     try:
@@ -33,6 +35,7 @@ def _native_execute(code_str: str, timeout: int = 2) -> tuple[bool, str, str]:
         return res.returncode == 0, res.stdout, res.stderr
     except subprocess.TimeoutExpired:
         return False, "", "Timeout"
+
 
 def _classify_error(stderr: str) -> str:
     stderr = stderr.lower()
@@ -48,6 +51,7 @@ def _classify_error(stderr: str) -> str:
 
 
 # ── 3. Test Verification (The True/False Anti-Hallucination Check) ────────────
+
 
 def verify_generated_tests(
     test_code: str, model_code: str, fn_name: str = None
@@ -80,11 +84,12 @@ def verify_generated_tests(
 
 # ── 4. Main Execution Sandbox ─────────────────────────────────────────────────
 
+
 def execution_reward(
     code: str,
     inputs: list[str],
     outputs: list[str],
-    **kwargs # Absorbs legacy args like `current_turn` or `shaped` from train_agent
+    **kwargs,  # Absorbs legacy args like `current_turn` or `shaped` from train_agent
 ) -> ExecutionResult:
     """
     Compiles the generated code against the hidden tests.

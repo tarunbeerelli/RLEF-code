@@ -63,6 +63,7 @@ def parse_output(text: str) -> dict:
 
 # ─── 3. THE INTERACTIVE MULTI-TURN ROLLOUT ───────────────────────────────
 
+
 async def run_single_episode(
     prompt_text: str,
     problem_data: dict,
@@ -86,8 +87,8 @@ async def run_single_episode(
     use_turn_penalty = ablation_cfg.get("use_turn_penalty", True)
     use_feedback_bonus = ablation_cfg.get("use_feedback_bonus", True)
     use_edge_cases = ablation_cfg.get("use_edge_cases", False)
-    feedback_type = ablation_cfg.get("feedback_type", "last_failed") 
-    
+    feedback_type = ablation_cfg.get("feedback_type", "last_failed")
+
     previous_pass_rate = 0.0
 
     for turn in range(max_turns):
@@ -110,7 +111,9 @@ async def run_single_episode(
         if not parsed["is_valid"]:
             episode_stats["invalid_format"] += 1
             feedback_str = "CRITICAL ERROR: Invalid format. You must wrap your executable logic inside a <code>...</code> block. Please try again."
-            current_context += f"{completion}\nUser: System Result:\n{feedback_str}\nAssistant:\n"
+            current_context += (
+                f"{completion}\nUser: System Result:\n{feedback_str}\nAssistant:\n"
+            )
             continue
 
         episode_stats["execute"] += 1
@@ -119,7 +122,9 @@ async def run_single_episode(
         # --- EDGE CASE VERIFICATION (RUNS 6 & 7) ---
         if use_edge_cases and parsed["edge_cases"]:
             episode_stats["generate_tests"] += 1
-            test_bonus = await asyncio.to_thread(verify_generated_tests, parsed["edge_cases"], parsed["code"], fn_name)
+            test_bonus = await asyncio.to_thread(
+                verify_generated_tests, parsed["edge_cases"], parsed["code"], fn_name
+            )
             step_reward += test_bonus
 
         # --- EXECUTE MAIN LOGIC ---
@@ -130,18 +135,20 @@ async def run_single_episode(
             outputs=outputs,
             previous_pass_rate=previous_pass_rate,
             current_turn=turn + 1,
-            shaped=False, 
+            shaped=False,
         )
 
         pass_rate = exec_result.pass_rate
-        
+
         # --- CENTRALIZED ABLATION REWARD MATH ---
-        step_reward += pass_rate if use_linear_pass_rate else (1.0 if pass_rate == 1.0 else 0.0)
-        
+        step_reward += (
+            pass_rate if use_linear_pass_rate else (1.0 if pass_rate == 1.0 else 0.0)
+        )
+
         if use_step_credit and 0.0 < pass_rate < 1.0:
             step_reward += 0.10
         if use_turn_penalty:
-            step_reward -= (turn * 0.05)
+            step_reward -= turn * 0.05
         if use_feedback_bonus and pass_rate > previous_pass_rate and turn > 0:
             step_reward += 0.10
 
@@ -154,21 +161,27 @@ async def run_single_episode(
             # --- CENTRALIZED ABLATION FEEDBACK ROUTING ---
             if feedback_type == "none":
                 feedback_str = f"Execution Pass Rate: {pass_rate * 100}%."
-            
+
             elif feedback_type == "consolidated":
                 err_counts = Counter(exec_result.error_types)
                 err_str = ", ".join([f"{v} {k}" for k, v in err_counts.items()])
-                feedback_str = f"Execution Pass Rate: {pass_rate * 100}%. Errors logged: {err_str}"
-            
+                feedback_str = (
+                    f"Execution Pass Rate: {pass_rate * 100}%. Errors logged: {err_str}"
+                )
+
             elif feedback_type == "last_failed":
                 feedback_str = f"Execution Pass Rate: {pass_rate * 100}%\n"
                 if len(inputs) > 0 and pass_rate < 1.0:
                     feedback_str += f"Failed on test case:\n- Input: {inputs[0]}\n- Expected Output: {outputs[0]}"
-            
-            else: # standard
-                feedback_str = f"Execution Pass Rate: {pass_rate * 100}%. Please revise."
 
-            current_context += f"{completion}\nUser: System Result:\n{feedback_str}\nAssistant:\n"
+            else:  # standard
+                feedback_str = (
+                    f"Execution Pass Rate: {pass_rate * 100}%. Please revise."
+                )
+
+            current_context += (
+                f"{completion}\nUser: System Result:\n{feedback_str}\nAssistant:\n"
+            )
 
             if turn == max_turns - 1:
                 final_reward += step_reward
@@ -176,7 +189,7 @@ async def run_single_episode(
     return {
         "context": prompt_text,
         "completions": trajectory_tokens,
-        "reward": max(0.0, final_reward), 
+        "reward": max(0.0, final_reward),
         "stats": episode_stats,
         "turns_taken": turn + 1,
         "final_context_length": len(current_context),
@@ -186,14 +199,17 @@ async def run_single_episode(
 
 # ─── 4. THE GRPO MATH & LORA-TOGGLE UPDATE ───────────────────────────────
 
+
 def grpo_update_step(batch_trajectories, beta=0.04):
     if not batch_trajectories:
         return 0.0, 0.0
-    
+
     policy_model.train()
     optimizer.zero_grad()
 
-    rewards = torch.tensor([traj["reward"] for traj in batch_trajectories], device=policy_model.device)
+    rewards = torch.tensor(
+        [traj["reward"] for traj in batch_trajectories], device=policy_model.device
+    )
     advantages = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
 
     total_loss = 0
@@ -201,7 +217,9 @@ def grpo_update_step(batch_trajectories, beta=0.04):
 
     for traj, adv in zip(batch_trajectories, advantages):
         full_text = traj["context"] + "".join(traj["completions"])
-        input_ids = tokenizer(full_text, return_tensors="pt").input_ids.to(policy_model.device)
+        input_ids = tokenizer(full_text, return_tensors="pt").input_ids.to(
+            policy_model.device
+        )
 
         policy_logits = policy_model(input_ids).logits
         policy_logprobs = F.log_softmax(policy_logits, dim=-1)
@@ -211,7 +229,11 @@ def grpo_update_step(batch_trajectories, beta=0.04):
                 ref_logits = policy_model(input_ids).logits
                 ref_logprobs = F.log_softmax(ref_logits, dim=-1)
 
-        kl_div = torch.exp(ref_logprobs - policy_logprobs) - (ref_logprobs - policy_logprobs) - 1
+        kl_div = (
+            torch.exp(ref_logprobs - policy_logprobs)
+            - (ref_logprobs - policy_logprobs)
+            - 1
+        )
         total_kl += kl_div.mean().item()
 
         ratio = torch.exp(policy_logprobs - ref_logprobs.detach())
@@ -231,13 +253,16 @@ def grpo_update_step(batch_trajectories, beta=0.04):
 
 # ─── 5. THE MASTER EXECUTION LOOP ────────────────────────────────────────
 
+
 async def main():
     with open("configs/train.yaml", "r") as f:
         cfg = yaml.safe_load(f)
 
     ablation_cfg = cfg.get("ablation", {})
     # Data path toggle prioritized in ablation config for Phase 1 vs Phase 2 curriculum
-    dataset_path = ablation_cfg.get("dataset_path", cfg.get("dataset_path", "./data/openrlhf_apps_train.jsonl"))
+    dataset_path = ablation_cfg.get(
+        "dataset_path", cfg.get("dataset_path", "./data/openrlhf_apps_train.jsonl")
+    )
     epochs = cfg.get("num_epochs", 3)
 
     dataset = []
@@ -256,9 +281,11 @@ async def main():
 
     start_temp = cfg.get("start_temp", 0.7)
     end_temp = cfg.get("end_temp", 0.2)
-    batch_size = cfg.get("batch_size", 50) 
-    
-    total_batches = (len(dataset) // batch_size + (1 if len(dataset) % batch_size != 0 else 0)) * epochs
+    batch_size = cfg.get("batch_size", 50)
+
+    total_batches = (
+        len(dataset) // batch_size + (1 if len(dataset) % batch_size != 0 else 0)
+    ) * epochs
     global_batch = 0
 
     for epoch in range(epochs):
@@ -267,34 +294,51 @@ async def main():
         # Step through the dataset in batches to allow continuous temp decay
         for i in range(0, len(dataset), batch_size):
             batch_data = dataset[i : i + batch_size]
-            
+
             # Smooth Linear Continuous Decay per batch step
-            current_temp = start_temp - (start_temp - end_temp) * (global_batch / max(1, total_batches - 1))
-            
+            current_temp = start_temp - (start_temp - end_temp) * (
+                global_batch / max(1, total_batches - 1)
+            )
+
             sampling_params = SamplingParams(
                 temperature=current_temp,
                 max_tokens=512,
-                stop=cfg.get("stop_tokens", ["</code>"]), 
+                stop=cfg.get("stop_tokens", ["</code>"]),
                 include_stop_str_in_output=True,
             )
 
-            active_lora = LoRARequest("active_policy", 1, lora_path="./checkpoint/active_lora")
+            active_lora = LoRARequest(
+                "active_policy", 1, lora_path="./checkpoint/active_lora"
+            )
 
-            tasks = [run_single_episode(data["prompt"], data, active_lora, sampling_params, ablation_cfg) for data in batch_data]
+            tasks = [
+                run_single_episode(
+                    data["prompt"], data, active_lora, sampling_params, ablation_cfg
+                )
+                for data in batch_data
+            ]
             trajectories = await asyncio.gather(*tasks)
 
-            avg_reward = sum(t["reward"] for t in trajectories) / max(1, len(trajectories))
-            
+            avg_reward = sum(t["reward"] for t in trajectories) / max(
+                1, len(trajectories)
+            )
+
             loss, kl_divergence = grpo_update_step(trajectories)
-            
+
             total_execute = sum(t["stats"]["execute"] for t in trajectories)
             total_tests = sum(t["stats"]["generate_tests"] for t in trajectories)
             total_invalid = sum(t["stats"]["invalid_format"] for t in trajectories)
-            
-            avg_turns = sum(t["turns_taken"] for t in trajectories) / max(1, len(trajectories))
-            avg_ctx_len = sum(t["final_context_length"] for t in trajectories) / max(1, len(trajectories))
-            success_rate = sum(t["success"] for t in trajectories) / max(1, len(trajectories))
-            
+
+            avg_turns = sum(t["turns_taken"] for t in trajectories) / max(
+                1, len(trajectories)
+            )
+            avg_ctx_len = sum(t["final_context_length"] for t in trajectories) / max(
+                1, len(trajectories)
+            )
+            success_rate = sum(t["success"] for t in trajectories) / max(
+                1, len(trajectories)
+            )
+
             current_lr = optimizer.param_groups[0]["lr"]
 
             wandb.log(
@@ -311,11 +355,13 @@ async def main():
                     "metrics/avg_context_length": avg_ctx_len,
                     "metrics/success_rate": success_rate,
                     "epoch": epoch + 1,
-                    "global_step": global_batch
+                    "global_step": global_batch,
                 }
             )
-            
-            print(f"Batch {global_batch+1}/{total_batches} | Temp: {current_temp:.3f} | Reward: {avg_reward:.2f} | Loss: {loss:.4f}")
+
+            print(
+                f"Batch {global_batch+1}/{total_batches} | Temp: {current_temp:.3f} | Reward: {avg_reward:.2f} | Loss: {loss:.4f}"
+            )
             global_batch += 1
 
         epoch_dir = f"./checkpoints/epoch_{epoch + 1}"
@@ -325,6 +371,7 @@ async def main():
         if os.path.exists(active_path):
             shutil.copytree(active_path, epoch_dir, dirs_exist_ok=True)
             print(f"Saved historical checkpoint to {epoch_dir}")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

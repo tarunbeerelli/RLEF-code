@@ -1,6 +1,6 @@
 """
 split_dataset.py — Run 7 Curriculum Partitioning
-Physically separates the APPS dataset into disjoint splits to prevent 
+Physically separates the APPS dataset into disjoint splits to prevent
 catastrophic forgetting and data contamination across phases.
 """
 
@@ -8,8 +8,11 @@ import json
 import random
 from pathlib import Path
 
+
 def main():
-    raw_path = Path("data/openrlhf_apps_train.jsonl") # Point this to your prep script output
+    raw_path = Path(
+        "data/openrlhf_apps_train.jsonl"
+    )  # Point this to your prep script output
     if not raw_path.exists():
         print(f"Error: {raw_path} not found. Run prepare_openrlhf_data.py first.")
         return
@@ -34,7 +37,7 @@ def main():
 
     # Phase 2 Dataset (Split B + Replay)
     phase_2_dataset = split_b + replay_buffer
-    random.shuffle(phase_2_dataset) # Mix the replay buffer in
+    random.shuffle(phase_2_dataset)  # Mix the replay buffer in
 
     phase_1_path = Path("data/apps_run7_phase1.jsonl")
     phase_2_path = Path("data/apps_run7_phase2.jsonl")
@@ -49,7 +52,10 @@ def main():
 
     print(f"Dataset Partitioning Complete (Total: {total}):")
     print(f"- Phase 1 (Split A): {len(split_a)} rows -> {phase_1_path}")
-    print(f"- Phase 2 (Split B + 10% Replay): {len(phase_2_dataset)} rows -> {phase_2_path}")
+    print(
+        f"- Phase 2 (Split B + 10% Replay): {len(phase_2_dataset)} rows -> {phase_2_path}"
+    )
+
 
 if __name__ == "__main__":
     main()

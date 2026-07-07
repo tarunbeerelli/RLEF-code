@@ -23,15 +23,23 @@ def parse_output(text: str) -> dict:
     }
 """
 
+
 # ─── 2. EVALUATION EPISODE ───────────────────────────────────────────────────
-async def evaluate_single_episode(prompt_text: str, problem_data: dict, vllm_engine, lora_req, sampling_params, ablation_cfg):
+async def evaluate_single_episode(
+    prompt_text: str,
+    problem_data: dict,
+    vllm_engine,
+    lora_req,
+    sampling_params,
+    ablation_cfg,
+):
     current_context = prompt_text
     max_turns = ablation_cfg.get("max_turns", 5)
     feedback_type = ablation_cfg.get("feedback_type", "last_failed")
-    
+
     inputs = problem_data.get("inputs", [])
     outputs = problem_data.get("outputs", [])
-    
+
     pass_at_1 = 0
     final_pass_rate = 0.0
 
@@ -60,15 +68,15 @@ async def evaluate_single_episode(prompt_text: str, problem_data: dict, vllm_eng
             code=parsed["code"],
             inputs=inputs,
             outputs=outputs,
-            shaped=False, 
+            shaped=False,
         )
 
         final_pass_rate = exec_result.pass_rate
-        
+
         # Track Zero-Shot pass@1
         if turn == 0 and final_pass_rate == 1.0:
             pass_at_1 = 1
-            
+
         if final_pass_rate == 1.0:
             break
         else:
@@ -77,16 +85,21 @@ async def evaluate_single_episode(prompt_text: str, problem_data: dict, vllm_eng
                 if len(inputs) > 0:
                     feedback_str += f"Failed on test case:\n- Input: {inputs[0]}\n- Expected Output: {outputs[0]}"
             else:
-                feedback_str = f"Execution Pass Rate: {final_pass_rate * 100}%. Please revise."
+                feedback_str = (
+                    f"Execution Pass Rate: {final_pass_rate * 100}%. Please revise."
+                )
 
-            current_context += f"{completion}\nUser: System Result:\n{feedback_str}\nAssistant:\n"
+            current_context += (
+                f"{completion}\nUser: System Result:\n{feedback_str}\nAssistant:\n"
+            )
 
     return {
         "pass_at_1": pass_at_1,
         "pass_at_N": 1 if final_pass_rate == 1.0 else 0,
         "final_pass_rate": final_pass_rate,
-        "turns_taken": turn + 1
+        "turns_taken": turn + 1,
     }
+
 
 # ─── 3. MASTER EVAL LOOP ─────────────────────────────────────────────────────
 async def main():
@@ -96,10 +109,10 @@ async def main():
     eval_cfg = cfg.get("evaluation", {})
     ablation_cfg = cfg.get("ablation", {})
     max_turns = ablation_cfg.get("max_turns", 5)
-    
+
     dataset_path = eval_cfg.get("dataset_path", "./data/apps_eval.jsonl")
     lora_path = eval_cfg.get("lora_path", "./checkpoint/active_lora")
-    
+
     dataset = []
     with open(dataset_path, "r") as f:
         for line in f:
@@ -118,7 +131,7 @@ async def main():
         entity=cfg.get("wandb_entity", "tarunbeerelli-northeastern-university"),
         config=cfg,
         tags=eval_tags,
-        job_type="evaluation"
+        job_type="evaluation",
     )
 
     print("Initializing vLLM Engine (Read-Only Mode)...")
@@ -133,22 +146,32 @@ async def main():
     vllm_engine = AsyncLLMEngine.from_engine_args(engine_args)
 
     sampling_params = SamplingParams(
-        temperature=0.0, # Greedy decoding for reliable benchmark execution
+        temperature=0.0,  # Greedy decoding for reliable benchmark execution
         max_tokens=512,
-        stop=cfg.get("stop_tokens", ["</code>"]), 
+        stop=cfg.get("stop_tokens", ["</code>"]),
         include_stop_str_in_output=True,
     )
 
     try:
         active_lora = LoRARequest("eval_policy", 1, lora_path=lora_path)
     except Exception as e:
-        print(f"Warning: Could not load LoRA at {lora_path}. Evaluating Base Model. Error: {e}")
+        print(
+            f"Warning: Could not load LoRA at {lora_path}. Evaluating Base Model. Error: {e}"
+        )
         active_lora = None
 
     semaphore = asyncio.Semaphore(50)
+
     async def bounded_eval(data):
         async with semaphore:
-            return await evaluate_single_episode(data["prompt"], data, vllm_engine, active_lora, sampling_params, ablation_cfg)
+            return await evaluate_single_episode(
+                data["prompt"],
+                data,
+                vllm_engine,
+                active_lora,
+                sampling_params,
+                ablation_cfg,
+            )
 
     print("\n=== Commencing Evaluation Sweep ===")
     tasks = [bounded_eval(data) for data in dataset]
@@ -171,13 +194,16 @@ async def main():
     print(f"Average Turns Taken: {avg_turns:.2f}")
 
     # Push structured evaluation metrics to the dashboard
-    wandb.log({
-        "eval/total_problems": total,
-        "eval/pass_at_1": pass_1_metric,
-        f"eval/pass_at_{max_turns}": pass_n_metric,
-        "eval/avg_partial_pass_rate": avg_pass_rate * 100,
-        "eval/avg_turns_taken": avg_turns,
-    })
+    wandb.log(
+        {
+            "eval/total_problems": total,
+            "eval/pass_at_1": pass_1_metric,
+            f"eval/pass_at_{max_turns}": pass_n_metric,
+            "eval/avg_partial_pass_rate": avg_pass_rate * 100,
+            "eval/avg_turns_taken": avg_turns,
+        }
+    )
+
 
 if __name__ == "__main__":
     asyncio.run(main())

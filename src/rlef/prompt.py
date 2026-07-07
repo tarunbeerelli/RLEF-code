@@ -10,10 +10,11 @@ import re
 
 # ─── 1. DYNAMIC SYSTEM PROMPT BUILDER ────────────────────────────────────────
 
+
 def build_system_prompt(ablation_cfg: dict) -> str:
     """Builds the system prompt dynamically based on the current ablation run."""
     use_edge_cases = ablation_cfg.get("use_edge_cases", False)
-    
+
     base_prompt = (
         "You are an expert Python algorithmic scientist operating in a multi-turn execution sandbox.\n"
         "Analyze the coding problem and implement a highly optimized solution.\n\n"
@@ -23,7 +24,7 @@ def build_system_prompt(ablation_cfg: dict) -> str:
     )
 
     if use_edge_cases:
-        # Runs 6 & 7: Test-Driven Development 
+        # Runs 6 & 7: Test-Driven Development
         base_prompt += (
             "2. ANCHOR & EXTEND: Extract one sample test case provided in the problem description to act as your ground-truth anchor. "
             "Generate up to 3 ADDITIONAL high-value edge cases (e.g., empty structures, bounds). "
@@ -45,9 +46,10 @@ def build_system_prompt(ablation_cfg: dict) -> str:
 
 # ─── 2. FEW-SHOT ALIGNMENT GENERATORS ────────────────────────────────────────
 
+
 def get_few_shot_history(use_edge_cases: bool) -> list[dict]:
     """Provides perfectly formatted XML examples to prevent format hallucinations."""
-    
+
     if use_edge_cases:
         return [
             {
@@ -75,7 +77,7 @@ def get_few_shot_history(use_edge_cases: bool) -> list[dict]:
             {
                 "role": "user",
                 "content": "System Result:\nExecution Pass Rate: 100.0%.",
-            }
+            },
         ]
     else:
         return [
@@ -98,11 +100,12 @@ def get_few_shot_history(use_edge_cases: bool) -> list[dict]:
             {
                 "role": "user",
                 "content": "System Result:\nExecution Pass Rate: 100.0%.",
-            }
+            },
         ]
 
 
 # ─── 3. MAIN FORMATTER ───────────────────────────────────────────────────────
+
 
 def format_prompt(
     problem: APPSProblem,
@@ -130,13 +133,16 @@ def format_prompt(
 
     return messages
 
+
 # ─── 4. INLINE EXTRACTION PARSER ─────────────────────────────────────────────
 def parse_output(text: str) -> dict:
     code_match = re.search(r"<code>\s*(.*?)\s*</code>", text, re.DOTALL | re.IGNORECASE)
-    edge_match = re.search(r"<edge_cases>\s*(.*?)\s*</edge_cases>", text, re.DOTALL | re.IGNORECASE)
-    
+    edge_match = re.search(
+        r"<edge_cases>\s*(.*?)\s*</edge_cases>", text, re.DOTALL | re.IGNORECASE
+    )
+
     return {
         "code": code_match.group(1).strip() if code_match else None,
         "edge_cases": edge_match.group(1).strip() if edge_match else None,
-        "is_valid": bool(code_match) # Code is strictly required to proceed
+        "is_valid": bool(code_match),  # Code is strictly required to proceed
     }

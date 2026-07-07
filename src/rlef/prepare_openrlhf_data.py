@@ -26,9 +26,11 @@ def main():
 
     ablation_cfg = cfg.get("ablation", {})
     use_edge_cases = ablation_cfg.get("use_edge_cases", False)
-    
+
     # Target output path defined in yaml (safeguards your different phase datasets)
-    output_path_str = ablation_cfg.get("dataset_path", cfg.get("dataset_path", "data/openrlhf_apps_train.jsonl"))
+    output_path_str = ablation_cfg.get(
+        "dataset_path", cfg.get("dataset_path", "data/openrlhf_apps_train.jsonl")
+    )
     output_file = Path(output_path_str)
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -71,9 +73,13 @@ def main():
             }
             f.write(json.dumps(row) + "\n")
 
-    print(f"\nSuccessfully exported {len(problems)} trajectory prompts to {output_file}")
+    print(
+        f"\nSuccessfully exported {len(problems)} trajectory prompts to {output_file}"
+    )
     if use_edge_cases:
-        print("Notice: Explicit 'Anchor & Extend' Ground Truth test cases were injected into the prompts.")
+        print(
+            "Notice: Explicit 'Anchor & Extend' Ground Truth test cases were injected into the prompts."
+        )
     else:
         print("Notice: Standard execution prompts generated (No edge case injection).")
 
