@@ -14,9 +14,11 @@ import re
 def build_system_prompt(ablation_cfg: dict) -> str:
     """Builds the system prompt dynamically based on the current ablation run."""
     use_edge_cases = ablation_cfg.get("use_edge_cases", False)
+    max_turns = ablation_cfg.get("max_turns", 5)
+    feedback_type = ablation_cfg.get("feedback_type", "last_failed")
 
     base_prompt = (
-        "You are an expert Python algorithmic scientist operating in a multi-turn execution sandbox.\n"
+        "You are an expert Python algorithmic scientist operating in an execution sandbox.\n"
         "Analyze the coding problem and implement a highly optimized solution.\n\n"
         "CRITICAL INSTRUCTIONS:\n"
         "1. FORCED CHAIN-OF-THOUGHT: Before writing any code, you MUST 'think out loud'. "
@@ -24,21 +26,36 @@ def build_system_prompt(ablation_cfg: dict) -> str:
     )
 
     if use_edge_cases:
-        # Runs 6 & 7: Test-Driven Development
+        # Runs 6 & 7 (Phase 2): Test-Driven Development
         base_prompt += (
-            "2. ANCHOR & EXTEND: Extract one sample test case provided in the problem description to act as your ground-truth anchor. "
+            "2. ANCHOR & EXTEND: Extract the ground-truth anchor provided in the prompt. "
             "Generate up to 3 ADDITIONAL high-value edge cases (e.g., empty structures, bounds). "
             "Wrap your test logic inside an <edge_cases>...</edge_cases> block using Python assert statements.\n"
-            "3. THE DUMMY FUNCTION THREAT: WARNING - Your generated edge cases will be evaluated against a malicious dummy function. "
-            "If you write generic, tautological tests (like `assert True` or `assert type(x) == int`), they will fail the sandbox validation "
-            "and you will be heavily penalized. Your tests must be mathematically rigorous.\n"
+            "3. TEST VALIDATION: Generic or unrelated tests (e.g., `assert True`) will be penalized. Your tests must be mathematically rigorous.\n"
             "4. IMPLEMENTATION: Once you have reasoned and written your edge cases, wrap your functional solution inside a <code>...</code> block.\n"
         )
+        step_num = 5
     else:
-        # Runs 1-5: Direct Execution
+        # Runs 1-5, 7 (Phase 1): Direct Execution
+        base_prompt += "2. IMPLEMENTATION: Implement your final solution and wrap it explicitly inside a <code>...</code> block.\n"
+        step_num = 3
+
+    # Dynamic Iteration Instruction based on physical sandbox toggles
+    if max_turns > 1:
+        if feedback_type == "none":
+            feedback_desc = "the overall execution pass rate"
+        elif feedback_type == "consolidated":
+            feedback_desc = "the execution pass rate and a summary of error types"
+        elif feedback_type == "last_failed":
+            feedback_desc = "the execution pass rate and the specific input/output of a failed test case"
+        else:
+            feedback_desc = "the execution pass rate"
+
+        base_prompt += f"{step_num}. ITERATION: If your code fails, review {feedback_desc} provided in the next turn and refine your solution.\n"
+    else:
         base_prompt += (
-            "2. IMPLEMENTATION: Implement your final solution and wrap it explicitly inside a <code>...</code> block.\n"
-            "3. ITERATION: If your code fails, review the execution errors or failed test cases provided in the next turn and refine your solution.\n"
+            f"{step_num}. ONE-SHOT EXECUTION: You only have ONE attempt to solve this problem. "
+            "Ensure your logic is flawless before outputting the <code> block, as there is no second turn.\n"
         )
 
     return base_prompt
@@ -136,13 +153,17 @@ def format_prompt(
 
 # ─── 4. INLINE EXTRACTION PARSER ─────────────────────────────────────────────
 def parse_output(text: str) -> dict:
+    reason_match = re.search(
+        r"<reasoning>\s*(.*?)\s*</reasoning>", text, re.DOTALL | re.IGNORECASE
+    )
     code_match = re.search(r"<code>\s*(.*?)\s*</code>", text, re.DOTALL | re.IGNORECASE)
     edge_match = re.search(
         r"<edge_cases>\s*(.*?)\s*</edge_cases>", text, re.DOTALL | re.IGNORECASE
     )
 
     return {
+        "has_reasoning": bool(reason_match),
         "code": code_match.group(1).strip() if code_match else None,
         "edge_cases": edge_match.group(1).strip() if edge_match else None,
-        "is_valid": bool(code_match),  # Code is strictly required to proceed
+        "is_valid": bool(code_match),
     }

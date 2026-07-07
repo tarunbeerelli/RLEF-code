@@ -37,21 +37,37 @@ def main():
     print("Loading raw APPS train split...")
     problems = load_apps_split("data/raw/APPS", split="train")
 
+    # Deterministic shuffle for identical splits every time
+    random.seed(42)
+    random.shuffle(problems)
+
+    # Automatically slice the dataset based on the target filename
+    if "phase1" in output_path_str:
+        problems = problems[: len(problems) // 2]
+        print(f"Curriculum Phase 1 Detected: Subsetting first {len(problems)} rows.")
+    elif "phase2" in output_path_str:
+        mid = len(problems) // 2
+        split_b = problems[mid:]
+        replay = random.sample(problems[:mid], max(1, int(mid * 0.10)))
+        problems = split_b + replay
+        random.shuffle(problems)
+        print(
+            f"Curriculum Phase 2 Detected: Subsetting second half + 10% replay ({len(problems)} rows)."
+        )
+
     print("Initializing Qwen Tokenizer for chat template formatting...")
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Coder-7B-Instruct")
 
     with open(output_file, "w", encoding="utf-8") as f:
         for p in problems:
             # 2. THE ANCHOR INJECTION (For Runs 6 & 7)
-            # If we are using edge cases, provide the absolute ground truth sample
-            if use_edge_cases and p.inputs and p.outputs:
+            if use_edge_cases and p.inputs and p.outputs and p.fn_name:
                 anchor_text = (
                     "\n\n=== GROUND TRUTH ANCHOR ===\n"
-                    f"Input:\n{p.inputs[0]}\n\n"
-                    f"Expected Output:\n{p.outputs[0]}\n"
+                    "Use this exact syntax for your <edge_cases> block:\n"
+                    f"assert {p.fn_name}({repr(p.inputs[0])}) == {repr(p.outputs[0])}\n"
                     "===========================\n"
                 )
-                # Append to the question so the tokenizer wraps it correctly
                 p.question = p.question.strip() + anchor_text
 
             # 3. Build the dynamic prompt based on the ablation config

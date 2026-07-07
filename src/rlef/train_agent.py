@@ -42,8 +42,18 @@ base_model = AutoModelForCausalLM.from_pretrained(
     device_map="auto",
 )
 
-lora_config = LoraConfig(r=16, target_modules=["q_proj", "v_proj", "k_proj", "o_proj"])
-policy_model = get_peft_model(base_model, lora_config)
+lora_resume = cfg.get("lora_resume_path", None)
+if lora_resume and os.path.exists(lora_resume):
+    print(f"Resuming Curriculum: Loading weights from {lora_resume}")
+    from peft import PeftModel
+
+    policy_model = PeftModel.from_pretrained(base_model, lora_resume, is_trainable=True)
+else:
+    print("Initializing fresh LoRA weights...")
+    lora_config = LoraConfig(
+        r=16, target_modules=["q_proj", "v_proj", "k_proj", "o_proj"]
+    )
+    policy_model = get_peft_model(base_model, lora_config)
 optimizer = torch.optim.AdamW(policy_model.parameters(), lr=5e-6)
 policy_model.save_pretrained("./checkpoint/active_lora")
 
@@ -108,6 +118,14 @@ async def run_single_episode(
 
         parsed = parse_output(completion)
 
+        if use_edge_cases and not parsed["edge_cases"]:
+            episode_stats["invalid_format"] += 1
+            feedback_str = "CRITICAL ERROR: Missing <edge_cases> block. You must write test cases before writing code."
+            current_context += (
+                f"{completion}\nUser: System Result:\n{feedback_str}\nAssistant:\n"
+            )
+            continue
+
         if not parsed["is_valid"]:
             episode_stats["invalid_format"] += 1
             feedback_str = "CRITICAL ERROR: Invalid format. You must wrap your executable logic inside a <code>...</code> block. Please try again."
@@ -145,10 +163,17 @@ async def run_single_episode(
             pass_rate if use_linear_pass_rate else (1.0 if pass_rate == 1.0 else 0.0)
         )
 
+        if parsed["has_reasoning"]:
+            step_reward += (
+                0.02  # Micro-reward for following chain-of-thought instructions
+            )
+
         if use_step_credit and 0.0 < pass_rate < 1.0:
             step_reward += 0.10
+
         if use_turn_penalty:
-            step_reward -= turn * 0.05
+            step_reward -= 0.05  # FIXED: Constant linear penalty per turn
+
         if use_feedback_bonus and pass_rate > previous_pass_rate and turn > 0:
             step_reward += 0.10
 
@@ -160,7 +185,9 @@ async def run_single_episode(
         else:
             # --- CENTRALIZED ABLATION FEEDBACK ROUTING ---
             if feedback_type == "none":
-                feedback_str = f"Execution Pass Rate: {pass_rate * 100}%."
+                feedback_str = (
+                    "Execution failed. Please try a different algorithmic approach."
+                )
 
             elif feedback_type == "consolidated":
                 err_counts = Counter(exec_result.error_types)

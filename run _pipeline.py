@@ -7,6 +7,7 @@ import subprocess
 import yaml
 import sys
 import os
+import random
 
 # ─── 1. FULL 7-RUN ABLATION SEQUENCE ─────────────────────────────────────────
 
@@ -169,13 +170,10 @@ def main():
         update_yaml_config(run)
         
         # Skip standard data prep for Run 7 since split_dataset.py handles it
-        if not run["name"].startswith("run_7"):
-            run_command(
-                "PYTHONPATH=src python3 src/rlef/prepare_openrlhf_data.py", 
-                "Data Preparation"
-            )
-        else:
-            print(f"\n[Data Preparation] Skipping auto-prep for {run['name']}. Using pre-split data.")
+        run_command(
+            "PYTHONPATH=src python3 src/rlef/prepare_openrlhf_data.py", 
+            "Data Preparation"
+        )
         
         run_command(
             "ray stop --force", 

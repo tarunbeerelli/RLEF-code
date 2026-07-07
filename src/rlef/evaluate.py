@@ -1,7 +1,7 @@
 """
 evaluate.py — Asynchronous Rollout Evaluator
 Calculates pass@1 and pass@N using the locked environment physics.
-Logs final macro evaluation suites directly to Weights & Biases.
+Logs final macro evaluation suites directly to Weights & Biases, categorized by difficulty.
 """
 
 import asyncio
@@ -13,18 +13,8 @@ from rlef.prompt import parse_output
 from vllm import AsyncEngineArgs, AsyncLLMEngine, SamplingParams
 from vllm.lora.request import LoRARequest
 
-"""
-# ─── 1. INLINE PARSER ────────────────────────────────────────────────────────
-def parse_output(text: str) -> dict:
-    code_match = re.search(r"<code>\s*(.*?)\s*</code>", text, re.DOTALL | re.IGNORECASE)
-    return {
-        "code": code_match.group(1).strip() if code_match else None,
-        "is_valid": bool(code_match)
-    }
-"""
 
-
-# ─── 2. EVALUATION EPISODE ───────────────────────────────────────────────────
+# ─── 1. EVALUATION EPISODE ───────────────────────────────────────────────────
 async def evaluate_single_episode(
     prompt_text: str,
     problem_data: dict,
@@ -35,6 +25,7 @@ async def evaluate_single_episode(
 ):
     current_context = prompt_text
     max_turns = ablation_cfg.get("max_turns", 5)
+    difficulty = problem_data.get("difficulty", "unknown")
     feedback_type = ablation_cfg.get("feedback_type", "last_failed")
 
     inputs = problem_data.get("inputs", [])
@@ -82,7 +73,7 @@ async def evaluate_single_episode(
         else:
             if feedback_type == "last_failed":
                 feedback_str = f"Execution Pass Rate: {final_pass_rate * 100}%\n"
-                if len(inputs) > 0:
+                if len(inputs) > 0 and final_pass_rate < 1.0:
                     feedback_str += f"Failed on test case:\n- Input: {inputs[0]}\n- Expected Output: {outputs[0]}"
             else:
                 feedback_str = (
@@ -94,6 +85,7 @@ async def evaluate_single_episode(
             )
 
     return {
+        "difficulty": difficulty,
         "pass_at_1": pass_at_1,
         "pass_at_N": 1 if final_pass_rate == 1.0 else 0,
         "final_pass_rate": final_pass_rate,
@@ -101,7 +93,7 @@ async def evaluate_single_episode(
     }
 
 
-# ─── 3. MASTER EVAL LOOP ─────────────────────────────────────────────────────
+# ─── 2. MASTER EVAL LOOP ─────────────────────────────────────────────────────
 async def main():
     with open("configs/train.yaml", "r") as f:
         cfg = yaml.safe_load(f)
@@ -178,31 +170,38 @@ async def main():
     results = await asyncio.gather(*tasks)
 
     total = len(results)
-    total_pass_1 = sum(r["pass_at_1"] for r in results)
-    total_pass_n = sum(r["pass_at_N"] for r in results)
-    avg_pass_rate = sum(r["final_pass_rate"] for r in results) / total
-    avg_turns = sum(r["turns_taken"] for r in results) / total
 
-    pass_1_metric = (total_pass_1 / total) * 100
-    pass_n_metric = (total_pass_n / total) * 100
+    metrics = {"eval/total_problems": total}
+
+    # Calculate overall metrics
+    metrics["eval/pass_at_1_overall"] = (
+        sum(r["pass_at_1"] for r in results) / total
+    ) * 100
+    metrics[f"eval/pass_at_{max_turns}_overall"] = (
+        sum(r["pass_at_N"] for r in results) / total
+    ) * 100
+    metrics["eval/avg_partial_pass_rate_overall"] = (
+        sum(r["final_pass_rate"] for r in results) / total * 100
+    )
+    metrics["eval/avg_turns_taken"] = sum(r["turns_taken"] for r in results) / total
+
+    # Calculate by category
+    for diff in ["introductory", "interview", "competition"]:
+        diff_results = [r for r in results if r["difficulty"] == diff]
+        if diff_results:
+            d_total = len(diff_results)
+            metrics[f"eval/pass_at_1_{diff}"] = (
+                sum(r["pass_at_1"] for r in diff_results) / d_total
+            ) * 100
+            metrics[f"eval/pass_at_{max_turns}_{diff}"] = (
+                sum(r["pass_at_N"] for r in diff_results) / d_total
+            ) * 100
 
     print("\n=== EVALUATION RESULTS ===")
-    print(f"Total Problems: {total}")
-    print(f"pass@1 (Zero-Shot): {pass_1_metric:.2f}%")
-    print(f"pass@{max_turns} (Multi-Turn): {pass_n_metric:.2f}%")
-    print(f"Average Partial Pass Rate: {avg_pass_rate * 100:.2f}%")
-    print(f"Average Turns Taken: {avg_turns:.2f}")
+    for k, v in metrics.items():
+        print(f"{k}: {v:.2f}")
 
-    # Push structured evaluation metrics to the dashboard
-    wandb.log(
-        {
-            "eval/total_problems": total,
-            "eval/pass_at_1": pass_1_metric,
-            f"eval/pass_at_{max_turns}": pass_n_metric,
-            "eval/avg_partial_pass_rate": avg_pass_rate * 100,
-            "eval/avg_turns_taken": avg_turns,
-        }
-    )
+    wandb.log(metrics)
 
 
 if __name__ == "__main__":
