@@ -56,5 +56,4 @@ jobs:
           PYTHONPATH=src:. poetry run pytest tests/ \
             -v \
             --tb=short \
-            -m "unit" \
-            --ignore=tests/test_train.py
+            -m "unit" 

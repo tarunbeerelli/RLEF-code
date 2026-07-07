@@ -92,10 +92,12 @@ def main():
     phase_2_path = Path("data/apps_run7_phase2.jsonl")
 
     with open(phase_1_path, "w") as f:
-        for row in split_a: f.write(json.dumps(row) + "\n")
+        for row in split_a:
+            f.write(json.dumps(row) + "\n")
 
     with open(phase_2_path, "w") as f:
-        for row in phase_2_dataset: f.write(json.dumps(row) + "\n")
+        for row in phase_2_dataset:
+            f.write(json.dumps(row) + "\n")
 
     print(f"Dataset Partitioning Complete (Total: {total}):")
     print(f"- Phase 1 (Split A): {len(split_a)} rows -> {phase_1_path}")

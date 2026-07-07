@@ -7,7 +7,6 @@ Fully parameterized for rigorous ablation studies.
 import asyncio
 import json
 import os
-import re
 import shutil
 from collections import Counter
 
@@ -188,7 +187,8 @@ async def run_single_episode(
 # ─── 4. THE GRPO MATH & LORA-TOGGLE UPDATE ───────────────────────────────
 
 def grpo_update_step(batch_trajectories, beta=0.04):
-    if not batch_trajectories: return 0.0, 0.0
+    if not batch_trajectories:
+        return 0.0, 0.0
     
     policy_model.train()
     optimizer.zero_grad()

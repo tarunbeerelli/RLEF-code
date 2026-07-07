@@ -20,6 +20,7 @@ ray = "^2.34.0"          # Required by vLLM for stable memory partitioning
 pytest = "^8.3.2"
 ruff = "^0.6.1"
 pre-commit = "^4.6.0"
+pandas = "<3.0.0"
 
 [build-system]
 requires = ["poetry-core"]
