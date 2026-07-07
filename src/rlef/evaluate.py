@@ -6,7 +6,6 @@ Logs final macro evaluation suites directly to Weights & Biases.
 
 import asyncio
 import json
-import re
 import yaml
 import wandb
 from rlef.reward import execution_reward
