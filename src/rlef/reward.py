@@ -33,7 +33,9 @@ def _native_execute(code_str: str, timeout: int = 2) -> tuple[bool, str, str]:
     Uses a temporary file to bypass Linux OS command-line argument limits (E2BIG).
     """
     # 1. Write the massive string to a secure temporary file
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".py", delete=False, encoding="utf-8"
+    ) as f:
         f.write(code_str)
         temp_file_path = f.name
 
@@ -80,7 +82,7 @@ def verify_generated_tests(
 
     # Attempt 1: Real Code
     real_env_code = f"{model_code}\n\n{test_code}"
-    real_success, _, _ = _native_execute(real_env_code, timeout=2)
+    real_success, _, _ = _native_execute(real_env_code, timeout=5)
 
     if not real_success:
         return -0.1  # The tests failed on their own code
@@ -88,7 +90,7 @@ def verify_generated_tests(
     # Attempt 2: Dummy Function
     target_fn = fn_name if fn_name else "solve"
     dummy_code = f"def {target_fn}(*args, **kwargs): return False\n\n{test_code}"
-    dummy_success, _, _ = _native_execute(dummy_code, timeout=2)
+    dummy_success, _, _ = _native_execute(dummy_code, timeout=5)
 
     if dummy_success:
         return -0.15  # Scaled penalty for hallucinating fake generic tests
@@ -154,7 +156,7 @@ def execution_reward(
     ]
 
     test_env_code = "\n".join(lines)
-    success, stdout, stderr = _native_execute(test_env_code, timeout=5)
+    success, stdout, stderr = _native_execute(test_env_code, timeout=10)
 
     passed = 0
     error_types = []
