@@ -22,6 +22,7 @@ poetry install
 echo "[3/5] Fetching & Preparing Datasets..."
 # Download the raw APPS dataset
 bash scripts/download_apps.sh
+poetry run python clean_and_optimize_dataset.py
 
 # Pre-bake the generic dataset and physically carve the Curriculum splits for Run 7
 echo "Generating curriculum splits..."

@@ -7,8 +7,10 @@ Reward shaping (step credits, multi-turn penalties) is handled upstream by train
 """
 
 import json
+import os
 import re
 import subprocess
+import tempfile
 from dataclasses import dataclass
 
 # ── 1. Data Structures ────────────────────────────────────────────────────────
@@ -27,14 +29,26 @@ class ExecutionResult:
 
 
 def _native_execute(code_str: str, timeout: int = 2) -> tuple[bool, str, str]:
-    """Runs code in an isolated subprocess to prevent master thread crashes."""
+    """Runs code in an isolated subprocess to prevent master thread crashes.
+    Uses a temporary file to bypass Linux OS command-line argument limits (E2BIG).
+    """
+    # 1. Write the massive string to a secure temporary file
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+        f.write(code_str)
+        temp_file_path = f.name
+
     try:
+        # 2. Run the file directly (bypassing the Linux argument length limit)
         res = subprocess.run(
-            ["python3", "-c", code_str], capture_output=True, text=True, timeout=timeout
+            ["python3", temp_file_path], capture_output=True, text=True, timeout=timeout
         )
         return res.returncode == 0, res.stdout, res.stderr
     except subprocess.TimeoutExpired:
         return False, "", "Timeout"
+    finally:
+        # 3. Always clean up the file immediately so you don't fill up the hard drive
+        if os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
 
 
 def _classify_error(stderr: str) -> str:
