@@ -88,6 +88,7 @@ RUNS = [
         "use_edge_cases": False,
         "feedback_type": "last_failed",
         "custom_data_path": "./data/apps_run7_phase1.jsonl",
+        "num_epochs": 2,  # <-- ADDED FOR CURRICULUM
     },
     {
         "name": "run_7_curriculum_phase_2",
@@ -101,6 +102,7 @@ RUNS = [
         "feedback_type": "last_failed",
         "custom_data_path": "./data/apps_run7_phase2.jsonl",
         "base_model_override": "./checkpoints/run_7_curriculum_phase_1_final",
+        "num_epochs": 2,  # <-- ADDED FOR CURRICULUM
     },
 ]
 
@@ -127,7 +129,7 @@ def update_yaml_config(run_config: dict):
         "wandb_project": "rlef-code",
         "wandb_entity": "tarunbeerelli-northeastern-university",
         "tags": run_config["tags"],
-        "num_epochs": 3,
+        "num_epochs": run_config.get("num_epochs", 3),  # <-- DYNAMIC EPOCH GRAB
         "start_temp": 0.7,
         "end_temp": 0.2,
         "batch_size": 50,
@@ -147,6 +149,12 @@ def update_yaml_config(run_config: dict):
             "lora_path": "./checkpoints/epoch_3",
         },
     }
+
+    # FIX: Curriculum eval phase relies on the proper epoch checkpoint
+    if "num_epochs" in run_config:
+        yaml_structure["evaluation"]["lora_path"] = (
+            f"./checkpoints/epoch_{run_config['num_epochs']}"
+        )
 
     if "base_model_override" in run_config:
         yaml_structure["lora_resume_path"] = run_config["base_model_override"]
@@ -188,8 +196,12 @@ def main():
         )
 
         # Safely archive the final epoch checkpoint so the next run doesn't overwrite it
+        target_epoch = run.get("num_epochs", 3)
         run_dir_name = f"./checkpoints/{run['name']}_final"
-        run_command(f"mv ./checkpoints/epoch_3 {run_dir_name}", "Checkpoint Archival")
+        run_command(
+            f"mv ./checkpoints/epoch_{target_epoch} {run_dir_name}",
+            "Checkpoint Archival",
+        )
 
     print("\n🎉 ALL SCHEDULED RUNS COMPLETED SUCCESSFULLY.")
 
