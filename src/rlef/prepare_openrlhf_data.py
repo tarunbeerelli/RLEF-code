@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 import yaml
+import random
 from transformers import AutoTokenizer
 
 from rlef.data import load_apps_split

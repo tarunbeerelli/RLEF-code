@@ -8,6 +8,7 @@ import asyncio
 import json
 import yaml
 import wandb
+from collections import Counter
 from rlef.reward import execution_reward
 from rlef.prompt import parse_output
 from vllm import AsyncEngineArgs, AsyncLLMEngine, SamplingParams
@@ -33,6 +34,7 @@ async def evaluate_single_episode(
 
     pass_at_1 = 0
     final_pass_rate = 0.0
+    episode_errors = []
 
     for turn in range(max_turns):
         request_generator = vllm_engine.generate(
@@ -50,7 +52,8 @@ async def evaluate_single_episode(
         parsed = parse_output(completion)
 
         if not parsed["is_valid"]:
-            current_context += f"{completion}\nUser: System Result:\nCRITICAL ERROR: Invalid format. Use <code>...</code>.\nAssistant:\n"
+            feedback_str = "CRITICAL ERROR: Invalid format. Use <code>...</code>."
+            current_context += f"{completion}<|im_end|>\n<|im_start|>user\nSystem Result:\n{feedback_str}<|im_end|>\n<|im_start|>assistant\n"
             continue
 
         # Execute Code
@@ -63,6 +66,8 @@ async def evaluate_single_episode(
         )
 
         final_pass_rate = exec_result.pass_rate
+        if hasattr(exec_result, "error_types"):
+            episode_errors.extend(exec_result.error_types)
 
         # Track Zero-Shot pass@1
         if turn == 0 and final_pass_rate == 1.0:
@@ -80,9 +85,7 @@ async def evaluate_single_episode(
                     f"Execution Pass Rate: {final_pass_rate * 100}%. Please revise."
                 )
 
-            current_context += (
-                f"{completion}\nUser: System Result:\n{feedback_str}\nAssistant:\n"
-            )
+            current_context += f"{completion}<|im_end|>\n<|im_start|>user\nSystem Result:\n{feedback_str}<|im_end|>\n<|im_start|>assistant\n"
 
     return {
         "difficulty": difficulty,
@@ -90,6 +93,7 @@ async def evaluate_single_episode(
         "pass_at_N": 1 if final_pass_rate == 1.0 else 0,
         "final_pass_rate": final_pass_rate,
         "turns_taken": turn + 1,
+        "errors": episode_errors,
     }
 
 
@@ -172,6 +176,19 @@ async def main():
     total = len(results)
 
     metrics = {"eval/total_problems": total}
+
+    # Aggregate and log all evaluation errors dynamically
+    sweep_errors = Counter()
+    for r in results:
+        sweep_errors.update(r["errors"])
+
+    for err_type, count in sweep_errors.items():
+        metrics[f"eval_errors/{err_type}"] = count
+
+    # Calculate overall metrics
+    metrics["eval/pass_at_1_overall"] = (
+        sum(r["pass_at_1"] for r in results) / total
+    ) * 100
 
     # Calculate overall metrics
     metrics["eval/pass_at_1_overall"] = (

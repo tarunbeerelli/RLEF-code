@@ -32,6 +32,11 @@ engine_args = AsyncEngineArgs(
     gpu_memory_utilization=0.50,
     max_model_len=4096,
 )
+
+# Load the config globally so the models know if they are in Phase 2
+with open("configs/train.yaml", "r") as f:
+    cfg = yaml.safe_load(f)
+
 vllm_engine = AsyncLLMEngine.from_engine_args(engine_args)
 
 print("Initializing PyTorch Policy Model (Allocating remaining VRAM)...")
@@ -63,7 +68,7 @@ policy_model.save_pretrained("./checkpoint/active_lora")
 def parse_output(text: str) -> dict:
     code_match = re.search(r"<code>\s*(.*?)\s*</code>", text, re.DOTALL | re.IGNORECASE)
     edge_match = re.search(r"<edge_cases>\s*(.*?)\s*</edge_cases>", text, re.DOTALL | re.IGNORECASE)
-    
+
     return {
         "code": code_match.group(1).strip() if code_match else None,
         "edge_cases": edge_match.group(1).strip() if edge_match else None,
@@ -85,6 +90,7 @@ async def run_single_episode(
     trajectory_tokens = []
     final_reward = 0.0
     episode_stats = {"execute": 0, "generate_tests": 0, "invalid_format": 0}
+    episode_errors = []
 
     inputs = problem_data.get("inputs", [])
     outputs = problem_data.get("outputs", [])
@@ -129,9 +135,7 @@ async def run_single_episode(
         if not parsed["is_valid"]:
             episode_stats["invalid_format"] += 1
             feedback_str = "CRITICAL ERROR: Invalid format. You must wrap your executable logic inside a <code>...</code> block. Please try again."
-            current_context += (
-                f"{completion}\nUser: System Result:\n{feedback_str}\nAssistant:\n"
-            )
+            current_context += f"{completion}<|im_end|>\n<|im_start|>user\nSystem Result:\n{feedback_str}<|im_end|>\n<|im_start|>assistant\n"
             continue
 
         episode_stats["execute"] += 1
@@ -157,6 +161,8 @@ async def run_single_episode(
         )
 
         pass_rate = exec_result.pass_rate
+        if hasattr(exec_result, "error_types"):
+            episode_errors.extend(exec_result.error_types)
 
         # --- CENTRALIZED ABLATION REWARD MATH ---
         step_reward += (
@@ -206,9 +212,7 @@ async def run_single_episode(
                     f"Execution Pass Rate: {pass_rate * 100}%. Please revise."
                 )
 
-            current_context += (
-                f"{completion}\nUser: System Result:\n{feedback_str}\nAssistant:\n"
-            )
+            current_context += f"{completion}<|im_end|>\n<|im_start|>user\nSystem Result:\n{feedback_str}<|im_end|>\n<|im_start|>assistant\n"
 
             if turn == max_turns - 1:
                 final_reward += step_reward
@@ -218,6 +222,7 @@ async def run_single_episode(
         "completions": trajectory_tokens,
         "reward": max(0.0, final_reward),
         "stats": episode_stats,
+        "errors": episode_errors,
         "turns_taken": turn + 1,
         "final_context_length": len(current_context),
         "success": 1 if pass_rate == 1.0 else 0,
@@ -368,23 +373,31 @@ async def main():
 
             current_lr = optimizer.param_groups[0]["lr"]
 
-            wandb.log(
-                {
-                    "train/loss": loss,
-                    "train/kl_divergence": kl_divergence,
-                    "train/avg_reward": avg_reward,
-                    "train/learning_rate": current_lr,
-                    "train/temperature": current_temp,
-                    "tools/execute_calls": total_execute,
-                    "tools/generate_tests_calls": total_tests,
-                    "tools/invalid_format_errors": total_invalid,
-                    "metrics/avg_turns": avg_turns,
-                    "metrics/avg_context_length": avg_ctx_len,
-                    "metrics/success_rate": success_rate,
-                    "epoch": epoch + 1,
-                    "global_step": global_batch,
-                }
-            )
+            batch_errors = Counter()
+            for t in trajectories:
+                batch_errors.update(t["errors"])
+
+            log_metrics = {
+                "train/loss": loss,
+                "train/kl_divergence": kl_divergence,
+                "train/avg_reward": avg_reward,
+                "train/learning_rate": current_lr,
+                "train/temperature": current_temp,
+                "tools/execute_calls": total_execute,
+                "tools/generate_tests_calls": total_tests,
+                "tools/invalid_format_errors": total_invalid,
+                "metrics/avg_turns": avg_turns,
+                "metrics/avg_context_length": avg_ctx_len,
+                "metrics/success_rate": success_rate,
+                "epoch": epoch + 1,
+                "global_step": global_batch,
+            }
+
+            # Dynamically add all error types to W&B
+            for err_type, count in batch_errors.items():
+                log_metrics[f"errors/{err_type}"] = count
+
+            wandb.log(log_metrics)
 
             print(
                 f"Batch {global_batch+1}/{total_batches} | Temp: {current_temp:.3f} | Reward: {avg_reward:.2f} | Loss: {loss:.4f}"
