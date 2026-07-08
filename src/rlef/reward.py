@@ -130,7 +130,7 @@ def execution_reward(
         return ExecutionResult(0, 0, 0.0, 0.0, ["SyntaxError"])
 
     lines = [
-        "import sys, io, builtins",
+        "import sys, io, builtins, math, collections, itertools, functools, heapq, bisect",
         "sys.setrecursionlimit(200000)",
         "user_code = " + repr(code),
         "all_inputs = " + repr(inputs),
@@ -141,7 +141,7 @@ def execution_reward(
         "    builtins.input = lambda *a, **kw: sys.stdin.readline().rstrip()",
         "    old_stdout = sys.stdout",
         "    sys.stdout = captured = io.StringIO()",
-        "    sandbox_globals = {'sys': sys, 'io': io, 'builtins': builtins}",
+        "    sandbox_globals = {'sys': sys, 'io': io, 'builtins': builtins, 'math': math, 'collections': collections, 'itertools': itertools, 'functools': functools, 'heapq': heapq, 'bisect': bisect}",
         "    try:",
         "        exec(user_code, sandbox_globals)",
         "        if 'main' in sandbox_globals: sandbox_globals['main']()",

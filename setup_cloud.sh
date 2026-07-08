@@ -35,8 +35,7 @@ echo "Weights & Biases Login:"
 poetry run wandb login
 
 echo "HuggingFace Hub Login:"
-HF_HUB_ENABLE_HF_TRANSFER=1 poetry run huggingface-cli login
-#hf auth login
+bash hf auth login
 
 echo "[5/5] Running Pre-Flight Validation Suite..."
 # Run the pure logic unit tests to verify prompt formats and parsers
