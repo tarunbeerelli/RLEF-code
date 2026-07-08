@@ -137,13 +137,13 @@ async def main():
         enable_lora=True,
         max_lora_rank=16,
         gpu_memory_utilization=0.60,
-        max_model_len=4096,
+        max_model_len=8192,
     )
     vllm_engine = AsyncLLMEngine.from_engine_args(engine_args)
 
     sampling_params = SamplingParams(
         temperature=0.0,  # Greedy decoding for reliable benchmark execution
-        max_tokens=512,
+        max_tokens=800,
         stop=cfg.get("stop_tokens", ["</code>"]),
         include_stop_str_in_output=True,
     )

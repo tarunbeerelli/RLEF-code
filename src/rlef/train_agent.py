@@ -34,7 +34,7 @@ engine_args = AsyncEngineArgs(
     enable_lora=True,
     max_lora_rank=16,
     gpu_memory_utilization=0.30,  # Severely restrict vLLM to leave ~98GB for PyTorch
-    max_model_len=4096,
+    max_model_len=8192,
 )
 
 vllm_engine = AsyncLLMEngine.from_engine_args(engine_args)
@@ -324,7 +324,7 @@ async def main():
 
             sampling_params = SamplingParams(
                 temperature=current_temp,
-                max_tokens=512,
+                max_tokens=800,
                 stop=cfg.get("stop_tokens", ["</code>"]),
                 include_stop_str_in_output=True,
             )
