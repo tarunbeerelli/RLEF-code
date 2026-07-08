@@ -10,22 +10,22 @@ tags: ["run_5", "multi_turn", "targeted_feedback", "linear_reward"]
 num_epochs: 3
 start_temp: 0.7
 end_temp: 0.2
-batch_size: 50
+batch_size: 20
 stop_tokens: ["</code>"]
 
 # ─── 3. ABLATION SWITCHBOARD ─────────────────────────────────────────────────
 ablation:
   dataset_path: "./data/apps_run_5.jsonl"
-  
+
   # Trajectory Limits
   max_turns: 5
-  
+
   # Reward Shaping Toggles
   use_linear_pass_rate: true
   use_step_credit: true
   use_turn_penalty: true
   use_feedback_bonus: true
-  
+
   # Architecture Toggles
   use_edge_cases: false           # Keeps the prompt focused purely on <code> execution
   feedback_type: "last_failed"    # Feeds the model the exact inputs[0] and outputs[0] it failed on

@@ -21,24 +21,25 @@ def build_system_prompt(ablation_cfg: dict) -> str:
         "You are an expert Python algorithmic scientist operating in an execution sandbox.\n"
         "Analyze the coding problem and implement a highly optimized solution.\n\n"
         "CRITICAL INSTRUCTIONS:\n"
-        "1. FORCED CHAIN-OF-THOUGHT: Before writing any code, you MUST 'think out loud'. "
+        "1. STRICT CONCISENESS: You operate under a severe token limit. Keep your reasoning brief and direct. Write efficient code with zero bloated comments.\n"
+        "2. FORCED CHAIN-OF-THOUGHT: Before writing any code, you MUST 'think out loud'. "
         "Analyze constraints and edge cases, and wrap your logic explicitly inside a <reasoning>...</reasoning> block.\n"
     )
 
     if use_edge_cases:
         # Runs 6 & 7 (Phase 2): Test-Driven Development
         base_prompt += (
-            "2. ANCHOR & EXTEND: Extract the ground-truth anchor provided in the prompt. "
+            "3. ANCHOR & EXTEND: Extract the ground-truth anchor provided in the prompt. "
             "Generate up to 3 ADDITIONAL high-value edge cases (e.g., empty structures, bounds). "
             "Wrap your test logic inside an <edge_cases>...</edge_cases> block using Python assert statements.\n"
-            "3. TEST VALIDATION: Generic or unrelated tests (e.g., `assert True`) will be penalized. Your tests must be mathematically rigorous.\n"
-            "4. IMPLEMENTATION: Once you have reasoned and written your edge cases, wrap your functional solution inside a <code>...</code> block.\n"
+            "4. TEST VALIDATION: Generic or unrelated tests (e.g., `assert True`) will be penalized. Your tests must be mathematically rigorous.\n"
+            "5. IMPLEMENTATION: Once you have reasoned and written your edge cases, wrap your functional solution inside a <code>...</code> block.\n"
         )
-        step_num = 5
+        step_num = 6
     else:
         # Runs 1-5, 7 (Phase 1): Direct Execution
-        base_prompt += "2. IMPLEMENTATION: Implement your final solution and wrap it explicitly inside a <code>...</code> block.\n"
-        step_num = 3
+        base_prompt += "3. IMPLEMENTATION: Implement your final solution and wrap it explicitly inside a <code>...</code> block.\n"
+        step_num = 4
 
     # Dynamic Iteration Instruction based on physical sandbox toggles
     if max_turns > 1:
