@@ -91,6 +91,7 @@ async def run_single_episode(
     final_reward = 0.0
     episode_stats = {"execute": 0, "generate_tests": 0, "invalid_format": 0}
     episode_errors = []
+    pass_rate = 0.0
 
     inputs = problem_data.get("inputs", [])
     outputs = problem_data.get("outputs", [])
@@ -169,10 +170,16 @@ async def run_single_episode(
             pass_rate if use_linear_pass_rate else (1.0 if pass_rate == 1.0 else 0.0)
         )
 
+        if parsed["is_valid"]:
+            step_reward += 0.02
+
         if parsed["has_reasoning"]:
             step_reward += (
                 0.02  # Micro-reward for following chain-of-thought instructions
             )
+
+        if use_edge_cases and parsed.get("edge_cases"):
+            step_reward += 0.02
 
         if use_step_credit and 0.0 < pass_rate < 1.0:
             step_reward += 0.10

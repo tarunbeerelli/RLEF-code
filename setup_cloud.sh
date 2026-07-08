@@ -26,7 +26,7 @@ bash scripts/download_apps.sh
 # Pre-bake the generic dataset and physically carve the Curriculum splits for Run 7
 echo "Generating curriculum splits..."
 poetry run python src/rlef/prepare_openrlhf_data.py
-poetry run python src/rlef/split_dataset.py
+#poetry run python src/rlef/split_dataset.py
 
 echo "[4/5] Authentication..."
 # Authenticate telemetry and model hub
