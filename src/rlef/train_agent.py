@@ -23,19 +23,19 @@ from vllm.lora.request import LoRARequest
 
 # ─── 1. INFRASTRUCTURE & MEMORY PARTITIONING ──────────────────────────────
 
-print("Initializing vLLM Engine (Allocating 50% of H200 VRAM)...")
+# Load the config globally so the models know if they are in Phase 2
+with open("configs/train.yaml", "r") as f:
+    cfg = yaml.safe_load(f)
+
+print("Initializing vLLM Engine (Allocating 30% of H200 VRAM)...")
 engine_args = AsyncEngineArgs(
     model="Qwen/Qwen2.5-Coder-7B-Instruct",
     enable_prefix_caching=True,
     enable_lora=True,
     max_lora_rank=16,
-    gpu_memory_utilization=0.50,
+    gpu_memory_utilization=0.30,  # Severely restrict vLLM to leave ~98GB for PyTorch
     max_model_len=4096,
 )
-
-# Load the config globally so the models know if they are in Phase 2
-with open("configs/train.yaml", "r") as f:
-    cfg = yaml.safe_load(f)
 
 vllm_engine = AsyncLLMEngine.from_engine_args(engine_args)
 
@@ -49,34 +49,22 @@ base_model = AutoModelForCausalLM.from_pretrained(
 
 lora_resume = cfg.get("lora_resume_path", None)
 if lora_resume and os.path.exists(lora_resume):
-    print(f"Resuming Curriculum: Loading weights from {lora_resume}")
+    print(f"🔄 Resuming Curriculum: Loading weights from {lora_resume}")
     from peft import PeftModel
 
     policy_model = PeftModel.from_pretrained(base_model, lora_resume, is_trainable=True)
 else:
-    print("Initializing fresh LoRA weights...")
+    print("🌟 Initializing fresh LoRA weights...")
     lora_config = LoraConfig(
         r=16, target_modules=["q_proj", "v_proj", "k_proj", "o_proj"]
     )
     policy_model = get_peft_model(base_model, lora_config)
+
 optimizer = torch.optim.AdamW(policy_model.parameters(), lr=5e-6)
 policy_model.save_pretrained("./checkpoint/active_lora")
 
-"""
-# ─── 2. INLINE EXTRACTION PARSER ─────────────────────────────────────────────
 
-def parse_output(text: str) -> dict:
-    code_match = re.search(r"<code>\s*(.*?)\s*</code>", text, re.DOTALL | re.IGNORECASE)
-    edge_match = re.search(r"<edge_cases>\s*(.*?)\s*</edge_cases>", text, re.DOTALL | re.IGNORECASE)
-
-    return {
-        "code": code_match.group(1).strip() if code_match else None,
-        "edge_cases": edge_match.group(1).strip() if edge_match else None,
-        "is_valid": bool(code_match) # Code is strictly required to proceed
-    }
-"""
-
-# ─── 3. THE INTERACTIVE MULTI-TURN ROLLOUT ───────────────────────────────
+# ─── 2. THE INTERACTIVE MULTI-TURN ROLLOUT ───────────────────────────────
 
 
 async def run_single_episode(
@@ -91,7 +79,7 @@ async def run_single_episode(
     final_reward = 0.0
     episode_stats = {"execute": 0, "generate_tests": 0, "invalid_format": 0}
     episode_errors = []
-    pass_rate = 0.0
+    pass_rate = 0.0  # Initialization fix
 
     inputs = problem_data.get("inputs", [])
     outputs = problem_data.get("outputs", [])
@@ -125,17 +113,15 @@ async def run_single_episode(
 
         parsed = parse_output(completion)
 
-        if use_edge_cases and not parsed["edge_cases"]:
-            episode_stats["invalid_format"] += 1
-            feedback_str = "CRITICAL ERROR: Missing <edge_cases> block. You must write test cases before writing code."
-            current_context += (
-                f"{completion}\nUser: System Result:\n{feedback_str}\nAssistant:\n"
-            )
-            continue
-
         if not parsed["is_valid"]:
             episode_stats["invalid_format"] += 1
             feedback_str = "CRITICAL ERROR: Invalid format. You must wrap your executable logic inside a <code>...</code> block. Please try again."
+            current_context += f"{completion}<|im_end|>\n<|im_start|>user\nSystem Result:\n{feedback_str}<|im_end|>\n<|im_start|>assistant\n"
+            continue
+
+        if use_edge_cases and not parsed.get("edge_cases"):
+            episode_stats["invalid_format"] += 1
+            feedback_str = "CRITICAL ERROR: Missing <edge_cases> block. You must write test cases before writing code."
             current_context += f"{completion}<|im_end|>\n<|im_start|>user\nSystem Result:\n{feedback_str}<|im_end|>\n<|im_start|>assistant\n"
             continue
 
@@ -143,7 +129,7 @@ async def run_single_episode(
         step_reward = 0.0
 
         # --- EDGE CASE VERIFICATION (RUNS 6 & 7) ---
-        if use_edge_cases and parsed["edge_cases"]:
+        if use_edge_cases and parsed.get("edge_cases"):
             episode_stats["generate_tests"] += 1
             test_bonus = await asyncio.to_thread(
                 verify_generated_tests, parsed["edge_cases"], parsed["code"], fn_name
@@ -156,8 +142,6 @@ async def run_single_episode(
             code=parsed["code"],
             inputs=inputs,
             outputs=outputs,
-            previous_pass_rate=previous_pass_rate,
-            current_turn=turn + 1,
             shaped=False,
         )
 
@@ -170,23 +154,18 @@ async def run_single_episode(
             pass_rate if use_linear_pass_rate else (1.0 if pass_rate == 1.0 else 0.0)
         )
 
-        if parsed["is_valid"]:
+        # Breadcrumb formatting rewards
+        if parsed.get("is_valid"):
             step_reward += 0.02
-
-        if parsed["has_reasoning"]:
-            step_reward += (
-                0.02  # Micro-reward for following chain-of-thought instructions
-            )
-
+        if parsed.get("has_reasoning"):
+            step_reward += 0.02
         if use_edge_cases and parsed.get("edge_cases"):
             step_reward += 0.02
 
         if use_step_credit and 0.0 < pass_rate < 1.0:
             step_reward += 0.10
-
         if use_turn_penalty:
-            step_reward -= 0.05  # FIXED: Constant linear penalty per turn
-
+            step_reward -= 0.05  # Stabilized Linear Penalty
         if use_feedback_bonus and pass_rate > previous_pass_rate and turn > 0:
             step_reward += 0.10
 
@@ -236,7 +215,7 @@ async def run_single_episode(
     }
 
 
-# ─── 4. THE GRPO MATH & LORA-TOGGLE UPDATE ───────────────────────────────
+# ─── 3. THE GRPO MATH & LORA-TOGGLE UPDATE ───────────────────────────────
 
 
 def grpo_update_step(batch_trajectories, beta=0.04):
@@ -245,6 +224,9 @@ def grpo_update_step(batch_trajectories, beta=0.04):
 
     policy_model.train()
     optimizer.zero_grad()
+
+    # Sweep the floor: flush fragmented memory before the massive allocation spike
+    torch.cuda.empty_cache()
 
     rewards = torch.tensor(
         [traj["reward"] for traj in batch_trajectories], device=policy_model.device
@@ -284,13 +266,17 @@ def grpo_update_step(batch_trajectories, beta=0.04):
         final_loss.backward()
         total_loss += final_loss.item()
 
+        # Immediate cleanup: delete massive tensors to free VRAM for the next trajectory loop
+        del policy_logits, ref_logits, policy_logprobs, ref_logprobs
+        del input_ids, kl_div, ratio, clipped_ratio, policy_loss, final_loss
+
     optimizer.step()
     policy_model.save_pretrained("./checkpoint/active_lora")
 
     return total_loss / len(batch_trajectories), total_kl / len(batch_trajectories)
 
 
-# ─── 5. THE MASTER EXECUTION LOOP ────────────────────────────────────────
+# ─── 4. THE MASTER EXECUTION LOOP ────────────────────────────────────────
 
 
 async def main():
@@ -298,7 +284,6 @@ async def main():
         cfg = yaml.safe_load(f)
 
     ablation_cfg = cfg.get("ablation", {})
-    # Data path toggle prioritized in ablation config for Phase 1 vs Phase 2 curriculum
     dataset_path = ablation_cfg.get(
         "dataset_path", cfg.get("dataset_path", "./data/openrlhf_apps_train.jsonl")
     )
@@ -330,11 +315,9 @@ async def main():
     for epoch in range(epochs):
         print(f"\n=== Starting Epoch {epoch+1} ===")
 
-        # Step through the dataset in batches to allow continuous temp decay
         for i in range(0, len(dataset), batch_size):
             batch_data = dataset[i : i + batch_size]
 
-            # Smooth Linear Continuous Decay per batch step
             current_temp = start_temp - (start_temp - end_temp) * (
                 global_batch / max(1, total_batches - 1)
             )
@@ -400,7 +383,6 @@ async def main():
                 "global_step": global_batch,
             }
 
-            # Dynamically add all error types to W&B
             for err_type, count in batch_errors.items():
                 log_metrics[f"errors/{err_type}"] = count
 
