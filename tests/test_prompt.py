@@ -9,12 +9,12 @@ def test_build_system_prompt_toggles():
     cfg_exec = {"use_edge_cases": False}
     prompt_exec = build_system_prompt(cfg_exec)
     assert "IMPLEMENTATION" in prompt_exec
-    assert "DUMMY FUNCTION THREAT" not in prompt_exec
+    assert "TEST VALIDATION" not in prompt_exec
 
     cfg_tdd = {"use_edge_cases": True}
     prompt_tdd = build_system_prompt(cfg_tdd)
     assert "<edge_cases>" in prompt_tdd
-    assert "DUMMY FUNCTION THREAT" in prompt_tdd
+    assert "TEST VALIDATION" in prompt_tdd
 
 
 def test_parse_output_clean_blocks():
