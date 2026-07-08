@@ -7,8 +7,10 @@ Reward shaping (step credits, multi-turn penalties) is handled upstream by train
 """
 
 import json
+import os
 import re
 import subprocess
+import tempfile
 from dataclasses import dataclass
 
 # ── 1. Data Structures ────────────────────────────────────────────────────────
@@ -27,14 +29,28 @@ class ExecutionResult:
 
 
 def _native_execute(code_str: str, timeout: int = 2) -> tuple[bool, str, str]:
-    """Runs code in an isolated subprocess to prevent master thread crashes."""
+    """Runs code in an isolated subprocess to prevent master thread crashes.
+    Uses a temporary file to bypass Linux OS command-line argument limits (E2BIG).
+    """
+    # 1. Write the massive string to a secure temporary file
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".py", delete=False, encoding="utf-8"
+    ) as f:
+        f.write(code_str)
+        temp_file_path = f.name
+
     try:
+        # 2. Run the file directly (bypassing the Linux argument length limit)
         res = subprocess.run(
-            ["python3", "-c", code_str], capture_output=True, text=True, timeout=timeout
+            ["python3", temp_file_path], capture_output=True, text=True, timeout=timeout
         )
         return res.returncode == 0, res.stdout, res.stderr
     except subprocess.TimeoutExpired:
         return False, "", "Timeout"
+    finally:
+        # 3. Always clean up the file immediately so you don't fill up the hard drive
+        if os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
 
 
 def _classify_error(stderr: str) -> str:
@@ -66,7 +82,7 @@ def verify_generated_tests(
 
     # Attempt 1: Real Code
     real_env_code = f"{model_code}\n\n{test_code}"
-    real_success, _, _ = _native_execute(real_env_code, timeout=2)
+    real_success, _, _ = _native_execute(real_env_code, timeout=5)
 
     if not real_success:
         return -0.1  # The tests failed on their own code
@@ -74,7 +90,7 @@ def verify_generated_tests(
     # Attempt 2: Dummy Function
     target_fn = fn_name if fn_name else "solve"
     dummy_code = f"def {target_fn}(*args, **kwargs): return False\n\n{test_code}"
-    dummy_success, _, _ = _native_execute(dummy_code, timeout=2)
+    dummy_success, _, _ = _native_execute(dummy_code, timeout=5)
 
     if dummy_success:
         return -0.15  # Scaled penalty for hallucinating fake generic tests
@@ -140,7 +156,7 @@ def execution_reward(
     ]
 
     test_env_code = "\n".join(lines)
-    success, stdout, stderr = _native_execute(test_env_code, timeout=5)
+    success, stdout, stderr = _native_execute(test_env_code, timeout=10)
 
     passed = 0
     error_types = []

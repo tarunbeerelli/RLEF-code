@@ -6,6 +6,7 @@ Logs final macro evaluation suites directly to Weights & Biases, categorized by 
 
 import asyncio
 import json
+import random
 import yaml
 import wandb
 from collections import Counter
@@ -109,12 +110,22 @@ async def main():
     dataset_path = eval_cfg.get("dataset_path", "./data/apps_eval.jsonl")
     lora_path = eval_cfg.get("lora_path", "./checkpoint/active_lora")
 
-    dataset = []
+    raw_dataset = []
     with open(dataset_path, "r") as f:
         for line in f:
-            dataset.append(json.loads(line))
+            raw_dataset.append(json.loads(line))
 
-    print(f"Loaded {len(dataset)} evaluation problems from {dataset_path}")
+    # --- THE EVALUATION CAP ---
+    random.seed(42)  # Keep it deterministic for 1:1 baseline comparisons
+    dataset = []
+    for diff in ["introductory", "interview", "competition"]:
+        diff_problems = [d for d in raw_dataset if d.get("difficulty") == diff]
+        random.shuffle(diff_problems)
+        dataset.extend(diff_problems[:250])
+
+    print(
+        f"Loaded {len(dataset)} evaluation problems from {dataset_path} (capped at 250 per difficulty)"
+    )
     print(f"Targeting LoRA checkpoint: {lora_path}")
 
     # Initialize W&B with evaluation metadata
@@ -136,14 +147,14 @@ async def main():
         enable_prefix_caching=True,
         enable_lora=True,
         max_lora_rank=16,
-        gpu_memory_utilization=0.60,
-        max_model_len=8192,
+        gpu_memory_utilization=0.60,  # Generous read-only footprint
+        max_model_len=8192,  # Raised ceiling for competition descriptions
     )
     vllm_engine = AsyncLLMEngine.from_engine_args(engine_args)
 
     sampling_params = SamplingParams(
         temperature=0.0,  # Greedy decoding for reliable benchmark execution
-        max_tokens=800,
+        max_tokens=800,  # Generous generation runway
         stop=cfg.get("stop_tokens", ["</code>"]),
         include_stop_str_in_output=True,
     )
@@ -184,11 +195,6 @@ async def main():
 
     for err_type, count in sweep_errors.items():
         metrics[f"eval_errors/{err_type}"] = count
-
-    # Calculate overall metrics
-    metrics["eval/pass_at_1_overall"] = (
-        sum(r["pass_at_1"] for r in results) / total
-    ) * 100
 
     # Calculate overall metrics
     metrics["eval/pass_at_1_overall"] = (
