@@ -21,3 +21,6 @@ local_results
 test_runner.py
 data/processed/
 src/rlef/*_pb2*.py
+analysis/
+results/
+notebooks/

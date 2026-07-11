@@ -88,7 +88,7 @@ RUNS = [
         "use_edge_cases": False,
         "feedback_type": "last_failed",
         "custom_data_path": "./data/apps_run7_phase1.jsonl",
-        "num_epochs": 2,  # <-- ADDED FOR CURRICULUM
+        "num_epochs": 2,
     },
     {
         "name": "run_7_curriculum_phase_2",
@@ -102,7 +102,7 @@ RUNS = [
         "feedback_type": "last_failed",
         "custom_data_path": "./data/apps_run7_phase2.jsonl",
         "base_model_override": "./checkpoints/run_7_curriculum_phase_1_final",
-        "num_epochs": 2,  # <-- ADDED FOR CURRICULUM
+        "num_epochs": 2,
     },
 ]
 
@@ -129,10 +129,10 @@ def update_yaml_config(run_config: dict):
         "wandb_project": "rlef-code",
         "wandb_entity": "tarunbeerelli-northeastern-university",
         "tags": run_config["tags"],
-        "num_epochs": run_config.get("num_epochs", 3),  # <-- DYNAMIC EPOCH GRAB
-        "start_temp": 0.7,
-        "end_temp": 0.2,
-        "batch_size": 50,
+        "num_epochs": run_config.get("num_epochs", 3),
+        "start_temp": run_config.get("start_temp", 0.7),  # <-- NOW DYNAMIC
+        "end_temp": run_config.get("end_temp", 0.2),  # <-- NOW DYNAMIC
+        "batch_size": run_config.get("batch_size", 20),  # <-- NOW DYNAMIC
         "stop_tokens": ["</code>"],
         "ablation": {
             "dataset_path": dataset_target,
@@ -150,7 +150,7 @@ def update_yaml_config(run_config: dict):
         },
     }
 
-    # FIX: Curriculum eval phase relies on the proper epoch checkpoint
+    # Curriculum eval phase relies on the proper epoch checkpoint
     if "num_epochs" in run_config:
         yaml_structure["evaluation"]["lora_path"] = (
             f"./checkpoints/epoch_{run_config['num_epochs']}"
@@ -179,7 +179,6 @@ def main():
 
         update_yaml_config(run)
 
-        # Skip standard data prep for Run 7 since split_dataset.py handles it
         run_command(
             "PYTHONPATH=src python3 src/rlef/prepare_openrlhf_data.py",
             "Data Preparation",

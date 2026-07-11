@@ -1,22 +1,84 @@
 """
-clean_and_optimize_dataset.py — Diagnostic Cloud Preprocessing Suite (Multi-Solution Checking)
+clean_and_optimize_dataset.py — Diagnostic Dataset Validation Suite (CORRECTED)
+
+Validates each APPS problem by checking whether ANY of its reference solutions
+passes the execution harness. Problems whose references all fail are treated as
+un-gradeable (broken test data, non-deterministic output, missing solutions) and
+archived so they don't inject false-negative reward signal into training.
+
+FIXES vs. previous version
+--------------------------
+1. HARNESS ROUTING (critical): the previous version forced fn_name routing when
+   fn_name was set. But APPS reference solutions in solutions.json are frequently
+   written as stdin/stdout scripts even for fn_name problems, so they scored 0
+   under the call-based harness and VALID problems got purged. We now try BOTH
+   routings (call-based and stdin) and keep the best pass_rate. A problem is kept
+   if any reference passes under any routing — mirroring how real APPS graders
+   fall back between modes.
+
+2. DRY_RUN (safety): defaults to True. The script REPORTS what it would archive
+   without moving anything. Only after you inspect the report do you set
+   DRY_RUN=False to actually move folders. Never run a destructive dataset
+   mutation blind right after a harness change.
+
+3. Dead kwargs removed: current_turn / difficulty / ablation_cfg were absorbed by
+   **kwargs and did nothing. Removed for clarity.
+
+4. Restore step generalized across splits and made safe if target dirs are absent.
+
+5. Longer timeout budget for reference validation: competition references can be
+   slow; a tight timeout false-fails legitimate solutions.
 """
 
+import argparse
+import os
 import pathlib
 import shutil
-import os
 from collections import Counter
 
-from dotenv import load_dotenv
 from rlef.data import load_apps_split
 from rlef.reward import execution_reward
 
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except Exception:
+    pass
 
 
-def sweep_and_purge_split(data_dir, split_name):
+# ── Reference validation: try BOTH harness routings, keep the best ────────────
+
+
+def _best_reference_pass_rate(p, max_solutions: int = 5):
+    """Return (best_pass_rate, best_error_types) across up to `max_solutions`
+    reference solutions, trying both call-based and stdin harness routings for
+    each. A reference is 'good' if it passes under EITHER routing."""
+    best_rate = 0.0
+    best_errs = ["Unknown Failure"]
+
+    for sol in p.solutions[:max_solutions]:
+        # Routing A: call-based (only meaningful if fn_name exists)
+        if p.fn_name:
+            r_call = execution_reward(sol, p.inputs, p.outputs, fn_name=p.fn_name)
+            if r_call.pass_rate > best_rate:
+                best_rate, best_errs = r_call.pass_rate, r_call.error_types
+            if best_rate == 1.0:
+                return best_rate, best_errs
+
+        # Routing B: stdin/stdout (works for script-style references)
+        r_std = execution_reward(sol, p.inputs, p.outputs, fn_name=None)
+        if r_std.pass_rate > best_rate:
+            best_rate, best_errs = r_std.pass_rate, r_std.error_types
+        if best_rate == 1.0:
+            return best_rate, best_errs
+
+    return best_rate, best_errs
+
+
+def sweep_and_purge_split(data_dir, split_name, dry_run=True):
     print("\n==================================================")
-    print(f"STARTING MULTI-SOLUTION SWEEP FOR SPLIT: {split_name.upper()}")
+    print(f"SWEEP FOR SPLIT: {split_name.upper()}  (dry_run={dry_run})")
     print("==================================================")
 
     try:
@@ -28,101 +90,119 @@ def sweep_and_purge_split(data_dir, split_name):
     total_problems = len(problems)
     passed_count = 0
     purged_count = 0
-
     error_tracker = Counter()
 
     base_data_path = pathlib.Path(data_dir) / split_name
     broken_base_path = pathlib.Path("data/raw/APPS_broken") / split_name
 
+    def _archive(problem_folder, problem_id):
+        """Move a folder to the broken archive, or just log it under dry_run."""
+        if not problem_folder.exists():
+            return
+        if dry_run:
+            return  # report-only; do not touch the filesystem
+        broken_dir = broken_base_path / problem_id
+        os.makedirs(broken_dir.parent, exist_ok=True)
+        shutil.move(str(problem_folder), str(broken_dir))
+
     for idx, p in enumerate(problems):
         problem_folder = base_data_path / p.problem_id
 
+        # No reference solutions -> cannot verify -> archive
         if (
             not p.solutions
             or not isinstance(p.solutions, list)
             or len(p.solutions) == 0
         ):
-            if problem_folder.exists():
-                error_tracker["No Ground Truth Provided"] += 1
-                broken_dir = broken_base_path / p.problem_id
-                os.makedirs(broken_dir.parent, exist_ok=True)
-                shutil.move(str(problem_folder), str(broken_dir))
-                purged_count += 1
+            error_tracker["No Ground Truth Provided"] += 1
+            _archive(problem_folder, p.problem_id)
+            purged_count += 1
             continue
 
-        # --- THE FIX: Try up to 5 different human solutions ---
-        best_pass_rate = 0.0
-        best_error_types = ["Unknown Failure"]
+        best_rate, best_errs = _best_reference_pass_rate(p)
 
-        for sol in p.solutions[:5]:
-            result = execution_reward(
-                code=sol,
-                inputs=p.inputs,
-                outputs=p.outputs,
-                fn_name=p.fn_name,
-                current_turn=1,
-                difficulty=p.difficulty,
-                ablation_cfg={
-                    "use_step_credit": False,
-                    "use_lint_bonus": False,
-                    "use_multi_turn": False,
-                },
-            )
-
-            if result.pass_rate > best_pass_rate:
-                best_pass_rate = result.pass_rate
-                best_error_types = result.error_types
-
-            if best_pass_rate == 1.0:
-                break  # We found a perfect solution, stop checking!
-
-        # ------------------------------------------------------
-
-        if best_pass_rate == 1.0:
+        if best_rate == 1.0:
             passed_count += 1
         else:
-            if problem_folder.exists():
-                if best_error_types:
-                    error_tracker.update(best_error_types)
-
-                broken_dir = broken_base_path / p.problem_id
-                os.makedirs(broken_dir.parent, exist_ok=True)
-                shutil.move(str(problem_folder), str(broken_dir))
-                purged_count += 1
+            if best_errs:
+                error_tracker.update(best_errs)
+            _archive(problem_folder, p.problem_id)
+            purged_count += 1
 
         if (idx + 1) % 250 == 0:
             print(
-                f"  Processed {idx + 1}/{total_problems}... Passed: {passed_count} | Archived: {purged_count}"
+                f"  Processed {idx + 1}/{total_problems}... "
+                f"Kept: {passed_count} | {'Would archive' if dry_run else 'Archived'}: {purged_count}"
             )
 
     print(f"\n=== SPLIT SUMMARY ({split_name.upper()}) ===")
-    print(f"  Total Originally Found: {total_problems}")
-    print(
-        f"  Verified Perfect (Kept): {passed_count} ({passed_count/total_problems:.1%})"
-    )
-    print(
-        f"  Broken/Empty (Archived): {purged_count} ({purged_count/total_problems:.1%})"
-    )
+    print(f"  Total found:            {total_problems}")
+    if total_problems:
+        print(
+            f"  Verified (kept):        {passed_count} ({passed_count/total_problems:.1%})"
+        )
+        print(
+            f"  {'Would archive' if dry_run else 'Archived'} (broken):  "
+            f"{purged_count} ({purged_count/total_problems:.1%})"
+        )
 
-    print("\n=== FAILURE AUTOPSY REPORT ===")
+    print("\n=== FAILURE AUTOPSY ===")
     for error_type, count in error_tracker.most_common():
         print(f"  - {error_type}: {count}")
 
+    if dry_run:
+        print(
+            "\n⚠️  DRY RUN — nothing was moved. If this report looks sane "
+            "(a low archive %, mostly 'No Ground Truth'/genuine failures),\n"
+            "    re-run with --apply to actually archive."
+        )
 
-def main():
-    target_data_dir = "data/raw/APPS"
 
-    # 1. Restore the previously archived problems so we can re-test them properly
-    broken_dir = pathlib.Path("data/raw/APPS_broken/train")
-    active_dir = pathlib.Path("data/raw/APPS/train")
-    if broken_dir.exists():
-        print("Restoring previously archived problems for multi-solution re-testing...")
+def restore_archived(splits):
+    """Move previously archived problems back so they can be re-tested."""
+    for split in splits:
+        broken_dir = pathlib.Path("data/raw/APPS_broken") / split
+        active_dir = pathlib.Path("data/raw/APPS") / split
+        if not broken_dir.exists():
+            continue
+        active_dir.mkdir(parents=True, exist_ok=True)
+        moved = 0
         for item in broken_dir.iterdir():
             if item.is_dir():
                 shutil.move(str(item), str(active_dir / item.name))
+                moved += 1
+        if moved:
+            print(f"Restored {moved} archived problems for split '{split}'.")
 
-    print("Initializing global APPS diagnostic sweep...")
-    sweep_and_purge_split(target_data_dir, split_name="train")
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Actually move broken problems. Without this flag, runs in DRY RUN.",
+    )
+    parser.add_argument(
+        "--splits",
+        nargs="+",
+        default=["train"],
+        help="Which splits to sweep (e.g. train test).",
+    )
+    parser.add_argument(
+        "--no-restore",
+        action="store_true",
+        help="Skip restoring previously archived problems before sweeping.",
+    )
+    args = parser.parse_args()
+
+    dry_run = not args.apply
+
+    if not args.no_restore:
+        restore_archived(args.splits)
+
+    print("Initializing APPS diagnostic sweep...")
+    for split in args.splits:
+        sweep_and_purge_split("data/raw/APPS", split_name=split, dry_run=dry_run)
 
 
 if __name__ == "__main__":

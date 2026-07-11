@@ -2,6 +2,7 @@
 prepare_openrlhf_data.py
 Converts the APPS dataset into the flat JSONL format required by the custom agent loop.
 Dynamically injects anchors and prompt structures based on the train.yaml ablation config.
+Generates a static evaluation set if missing, reading paths directly from the config.
 """
 
 import json
@@ -26,14 +27,19 @@ def main():
         return
 
     ablation_cfg = cfg.get("ablation", {})
+    evaluation_cfg = cfg.get("evaluation", {})
     use_edge_cases = ablation_cfg.get("use_edge_cases", False)
 
-    # Target output path defined in yaml (safeguards your different phase datasets)
+    # Target output paths defined in yaml
     output_path_str = ablation_cfg.get(
         "dataset_path", cfg.get("dataset_path", "data/openrlhf_apps_train.jsonl")
     )
     output_file = Path(output_path_str)
     output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    eval_path_str = evaluation_cfg.get("dataset_path", "data/apps_eval.jsonl")
+    eval_file = Path(eval_path_str)
+    eval_file.parent.mkdir(parents=True, exist_ok=True)
 
     print("Loading raw APPS train split...")
     problems = load_apps_split("data/raw/APPS", split="train")
@@ -41,6 +47,9 @@ def main():
     # Deterministic shuffle for identical splits every time
     random.seed(42)
     random.shuffle(problems)
+
+    # 🚨 STRICT ABLATION CAP: Lock to exactly 500 problems
+    problems = problems[:500]
 
     # Automatically slice the dataset based on the target filename
     if "phase1" in output_path_str:
@@ -59,6 +68,7 @@ def main():
     print("Initializing Qwen Tokenizer for chat template formatting...")
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Coder-7B-Instruct")
 
+    # --- 1. GENERATE TRAINING DATA ---
     with open(output_file, "w", encoding="utf-8") as f:
         for p in problems:
             # 2. THE ANCHOR INJECTION (For Runs 6 & 7)
@@ -99,6 +109,55 @@ def main():
         )
     else:
         print("Notice: Standard execution prompts generated (No edge case injection).")
+
+    # --- 2. GENERATE STATIC EVAL DATA (IF MISSING) ---
+    if not eval_file.exists():
+        print(
+            f"\nEvaluation dataset missing. Generating static eval split at {eval_file}..."
+        )
+        try:
+            eval_problems = load_apps_split("data/raw/APPS", split="test")
+            random.seed(42)
+            # Sample a KNOWN count per difficulty so eval denominators are real.
+            # evaluate.py takes up to 250 per bucket; provide that many when available.
+            PER_BUCKET = 250
+            from collections import defaultdict
+
+            by_diff = defaultdict(list)
+            for p in eval_problems:
+                by_diff[p.difficulty].append(p)
+            balanced = []
+            for diff in ["introductory", "interview", "competition"]:
+                pool = by_diff.get(diff, [])
+                random.shuffle(pool)
+                take = pool[:PER_BUCKET]
+                balanced.extend(take)
+                print(f"  eval {diff}: {len(take)} problems")
+            eval_problems = balanced
+
+            with open(eval_file, "w", encoding="utf-8") as f:
+                for p in eval_problems:
+                    # Baseline zero-shot prompt for evaluation consistency
+                    eval_messages = format_prompt(p, {"max_turns": 1})
+                    eval_prompt = tokenizer.apply_chat_template(
+                        eval_messages, tokenize=False, add_generation_prompt=True
+                    )
+                    row = {
+                        "problem_id": p.problem_id,
+                        "difficulty": p.difficulty,
+                        "prompt": eval_prompt,
+                        "inputs": p.inputs,
+                        "outputs": p.outputs,
+                        "fn_name": p.fn_name,
+                    }
+                    f.write(json.dumps(row) + "\n")
+            print(
+                f"Successfully generated {len(eval_problems)} evaluation prompts to {eval_file}"
+            )
+        except Exception as e:
+            print(
+                f"Warning: Could not generate eval split. Ensure 'test' split exists. Error: {e}"
+            )
 
 
 if __name__ == "__main__":
