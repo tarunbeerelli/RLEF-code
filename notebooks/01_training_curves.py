@@ -1,192 +1,149 @@
-# %% [markdown]
-# # Training Curves
-#
-# Pulls reward and loss curves from WandB for the main training run
-# and any ablation runs. Run this during or after training.
-#
-# Requires: wandb login, a completed or in-progress training run.
+"""
+01_training_curves.py
+Pulls training metrics from the Weights & Biases API.
+Uses exact TAG matching to locate the runs dynamically, excludes evals,
+and uses the verified custom metric keys to pull the history.
+"""
 
-# %%
-import os
-from pathlib import Path
-
-import matplotlib.pyplot as plt
-import matplotlib.ticker as mticker
-import numpy as np
-import pandas as pd
 import wandb
-from dotenv import load_dotenv
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-load_dotenv()
+PROJECT_PATH = "tarunbeerelli-northeastern-university/rlef-code"
 
-Path("../analysis").mkdir(exist_ok=True)
-
-plt.rcParams.update(
-    {
-        "figure.dpi": 130,
-        "font.size": 11,
-        "axes.spines.top": False,
-        "axes.spines.right": False,
-        "axes.grid": True,
-        "grid.alpha": 0.3,
-    }
-)
-
-BLUE = "#2563EB"
-ORANGE = "#EA580C"
-GREEN = "#16A34A"
-GRAY = "#6B7280"
-
-# %%
-# ── Config ────────────────────────────────────────────────────────────────────
-# Fill these in after your first training run
-
-WANDB_ENTITY = os.environ.get("WANDB_ENTITY", "your-wandb-username")
-WANDB_PROJECT = "rlef-code"
-
-# runs to compare — add ablation run names here later
-RUNS = {
-    "Single-turn RLVR": "rlef-code",  # default run name from train.yaml
+# The complete, verified 8-run project tags
+TARGET_RUNS = {
+    "R1: Sparse Baseline": "sparse_baseline",
+    "R2: Dense Baseline": "dense_baseline",
+    "R3: Multi-Turn Standard": "multi_turn_baseline",
+    "R4: Macro Heuristic": "macro_heuristic",
+    "R5: Multi-Turn Targeted": "targeted_feedback",
+    "R6: Cold-Start TDD": "anchored_tdd",
+    "R7: Curriculum Phase 1": "phase_1_execution",
+    "R7: Curriculum Phase 2": "phase_2_tdd",
 }
 
 
-# %%
-def fetch_history(run_name: str, keys: list[str]) -> pd.DataFrame:
-    """Pull metric history from WandB by run name."""
+def fetch_run_history():
     api = wandb.Api()
-    runs = api.runs(
-        f"{WANDB_ENTITY}/{WANDB_PROJECT}",
-        filters={"display_name": run_name},
+    all_data = []
+
+    for label, tag_name in TARGET_RUNS.items():
+        try:
+            # Match the highly specific architecture tag, strictly exclude eval runs
+            filters = {"tags": {"$in": [tag_name], "$nin": ["eval"]}}
+
+            runs = api.runs(PROJECT_PATH, filters=filters)
+            if not runs:
+                print(f"⚠️ No training runs found with tag: {tag_name}")
+                continue
+
+            valid_run_found = False
+
+            for run in runs:
+                # Double-check it's not an eval run just in case
+                if "eval" in run.tags:
+                    continue
+
+                # The EXACT keys verified from your W&B dashboard
+                history = run.history(
+                    keys=["train/avg_reward", "metrics/success_rate", "train/loss"],
+                    samples=150,
+                )
+
+                if not history.empty:
+                    print(f"🔄 Pulled valid data for {label} (Run ID: {run.name})")
+                    history["Model"] = label
+                    history["Step"] = history.index
+                    all_data.append(history)
+                    valid_run_found = True
+                    break
+
+            if not valid_run_found:
+                print(
+                    f"⚠️ Found runs for tag '{tag_name}', but they were empty or evals."
+                )
+
+        except Exception as e:
+            print(f"Error fetching data for tag {tag_name}: {e}")
+
+    return pd.concat(all_data, ignore_index=True) if all_data else pd.DataFrame()
+
+
+def plot_training_curves(df):
+    if df.empty:
+        print("❌ No training data retrieved. Cannot plot curves.")
+        return
+
+    fig, axes = plt.subplots(1, 3, figsize=(24, 7))
+    sns.set_theme(style="whitegrid")
+
+    palette = sns.color_palette("husl", 8)
+
+    # 1. Reward Dynamics
+    sns.lineplot(
+        data=df,
+        x="Step",
+        y="train/avg_reward",
+        hue="Model",
+        ax=axes[0],
+        palette=palette,
+        linewidth=1.5,
     )
-    if not runs:
-        print(f"Run '{run_name}' not found — using synthetic data for layout preview.")
-        return _synthetic_run(run_name, keys)
+    axes[0].set_title("Reward Dynamics", fontweight="bold", fontsize=14, pad=15)
+    axes[0].set_ylabel("Reward Signal")
 
-    run = runs[0]
-    history = run.history(keys=keys, pandas=True)
-    print(f"Fetched {len(history)} steps for '{run_name}'")
-    return history
+    # 2. Pass Rate Convergence
+    sns.lineplot(
+        data=df,
+        x="Step",
+        y="metrics/success_rate",
+        hue="Model",
+        ax=axes[1],
+        palette=palette,
+        linewidth=1.5,
+    )
+    axes[1].set_title(
+        "Training Pass Rate Convergence", fontweight="bold", fontsize=14, pad=15
+    )
+    axes[1].set_ylabel("Pass Rate")
+    axes[1].yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.0%}"))
 
+    # 3. Loss Curves
+    sns.lineplot(
+        data=df,
+        x="Step",
+        y="train/loss",
+        hue="Model",
+        ax=axes[2],
+        palette=palette,
+        linewidth=1.5,
+    )
+    axes[2].set_title(
+        "Optimization Loss Curves", fontweight="bold", fontsize=14, pad=15
+    )
+    axes[2].set_ylabel("Training Loss")
 
-def _synthetic_run(name: str, keys: list[str]) -> pd.DataFrame:
-    """
-    Synthetic data so the notebook renders before you have real results.
-    Replace this with real WandB data after training.
-    """
-    steps = np.arange(200)
-    data = {"_step": steps, "run": name}
-    for key in keys:
-        if "reward" in key:
-            data[key] = (
-                0.05 + 0.20 * (1 - np.exp(-steps / 80)) + np.random.normal(0, 0.01, 200)
-            )
-        elif "loss" in key:
-            data[key] = (
-                2.5 - 0.6 * (1 - np.exp(-steps / 100)) + np.random.normal(0, 0.03, 200)
+    for i, ax in enumerate(axes):
+        ax.set_xlabel("Training Step")
+        if i == 2:
+            ax.legend(
+                title="Model Suite",
+                fontsize=10,
+                bbox_to_anchor=(1.05, 1),
+                loc="upper left",
             )
         else:
-            data[key] = np.random.uniform(0, 1, 200)
-    return pd.DataFrame(data)
+            ax.get_legend().remove()
+
+    sns.despine()
+    plt.tight_layout()
+    plt.savefig("analysis_01_training_curves.png", dpi=300, bbox_inches="tight")
+    print("\n🎉 Chart rendered successfully. Saved to: analysis_01_training_curves.png")
 
 
-def smooth(series: pd.Series, window: int = 15) -> pd.Series:
-    """Rolling mean to reduce step-level noise. Show both raw and smoothed."""
-    return series.rolling(window, min_periods=1).mean()
-
-
-# %%
-# ── Fetch data ────────────────────────────────────────────────────────────────
-
-METRICS = [
-    "episode/final_reward",
-    "episode/pass_rate",
-    "train/loss",
-    "tools/execute",
-    "tools/lint",
-    "tools/generate_tests",
-]
-
-histories = {
-    label: fetch_history(run_name, METRICS) for label, run_name in RUNS.items()
-}
-
-# %%
-# ── Plot 1: Reward + loss ─────────────────────────────────────────────────────
-
-fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
-colors = [BLUE, ORANGE, GREEN, GRAY]
-
-for ax, metric, title, ylabel in [
-    (axes[0], "episode/final_reward", "Reward over training", "Mean episode reward"),
-    (axes[1], "episode/pass_rate", "Pass rate over training", "Pass rate"),
-    (axes[2], "train/loss", "Loss over training", "Training loss"),
-]:
-    for (label, df), color in zip(histories.items(), colors):
-        if metric not in df.columns:
-            continue
-        ax.plot(df["_step"], df[metric], alpha=0.15, color=color, lw=0.8)
-        ax.plot(
-            df["_step"], smooth(df[metric]), alpha=1.0, color=color, lw=2.0, label=label
-        )
-
-    ax.set_xlabel("Training step")
-    ax.set_ylabel(ylabel)
-    ax.set_title(title, fontweight="bold")
-    ax.legend(fontsize=9)
-
-    if "rate" in metric or "reward" in metric:
-        ax.yaxis.set_major_formatter(mticker.PercentFormatter(1.0))
-
-plt.tight_layout()
-plt.savefig("../analysis/training_curves.png", bbox_inches="tight", dpi=150)
-plt.show()
-print("Saved: analysis/training_curves.png")
-
-# %%
-# ── Plot 2: Tool usage over training ─────────────────────────────────────────
-# Only meaningful for multi-turn runs — shows whether the model learns
-# to use lint and test generation strategically over time.
-
-fig, ax = plt.subplots(figsize=(10, 4))
-
-for (label, df), color in zip(histories.items(), colors):
-    tool_cols = ["tools/execute", "tools/lint", "tools/generate_tests"]
-    tool_cols = [c for c in tool_cols if c in df.columns]
-    if not tool_cols:
-        continue
-
-    for col, ls in zip(tool_cols, ["-", "--", "-."]):
-        tool_name = col.split("/")[1]
-        ax.plot(
-            df["_step"],
-            smooth(df[col], window=20),
-            color=color,
-            linestyle=ls,
-            lw=1.8,
-            label=f"{label} — {tool_name}",
-        )
-
-ax.set_xlabel("Training step")
-ax.set_ylabel("Tool calls per episode")
-ax.set_title("Tool usage over training", fontweight="bold")
-ax.legend(fontsize=8)
-
-plt.tight_layout()
-plt.savefig("../analysis/tool_usage.png", bbox_inches="tight", dpi=150)
-plt.show()
-print("Saved: analysis/tool_usage.png")
-
-# %%
-# ── Summary stats ─────────────────────────────────────────────────────────────
-
-for label, df in histories.items():
-    if "episode/final_reward" not in df.columns:
-        continue
-    r = df["episode/final_reward"]
-    print(f"\n{label}")
-    print(f"  Steps:          {len(df)}")
-    print(f"  Initial reward: {r.iloc[:10].mean():.3f}")
-    print(f"  Final reward:   {r.iloc[-20:].mean():.3f}")
-    print(f"  Peak reward:    {r.max():.3f}")
-    delta = r.iloc[-20:].mean() - r.iloc[:10].mean()
-    print(f"  Improvement:    {delta:+.3f}")
+if __name__ == "__main__":
+    print("🚀 Initiating cloud sweep using verified tags and metric keys...")
+    df = fetch_run_history()
+    plot_training_curves(df)

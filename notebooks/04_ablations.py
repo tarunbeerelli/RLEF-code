@@ -1,113 +1,100 @@
-# %% [markdown]
-# # Ablation Comparison
-#
-# Compares ablation runs side by side.
-# Run after all ablation training jobs complete.
-# Each ablation result must be in results/apps_eval_{tag}.json
+"""
+04_ablations.py
+Generates the Full Unified Project Horizon Strategy Matrix comparing
+the zero-shot pass rates across ALL 8 RLHF iterations.
+"""
 
-# %%
 import json
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
 from pathlib import Path
 
-import matplotlib.pyplot as plt
-import matplotlib.ticker as mticker
-import numpy as np
-import pandas as pd
-
-Path("../analysis").mkdir(exist_ok=True)
-
-plt.rcParams.update(
-    {
-        "figure.dpi": 130,
-        "font.size": 11,
-        "axes.spines.top": False,
-        "axes.spines.right": False,
-        "axes.grid": True,
-        "grid.alpha": 0.3,
-    }
-)
-
-COLORS = ["#2563EB", "#EA580C", "#16A34A", "#7C3AED", "#DB2777", "#6B7280"]
-
-# %%
-# ── Load all ablation results ─────────────────────────────────────────────────
-# Add tags here as you complete each ablation run
-
-ABLATION_TAGS = {
-    "Baseline (no training)": "baseline",
-    "Single-turn RLVR (ours)": "trained",
-    # add these after running ablations:
-    # "Binary reward":            "ablation_binary_reward",
-    # "No shaping":               "ablation_no_shaping",
-    # "Trajectory credit":        "ablation_traj_credit",
-    # "Multi-turn (3 turns)":     "ablation_multi_turn",
+# The complete 8-run local file matrix
+ABLATION_FILES = {
+    "R1: Sparse Baseline": "results/apps_eval_run_1_sparse_baseline_final.json",
+    "R2: Dense Baseline": "results/apps_eval_run_2_dense_baseline_final.json",
+    "R3: Multi-Turn Standard": "results/apps_eval_run_3_multi_turn_baseline_final.json",
+    "R4: Macro Heuristic": "results/apps_eval_run_4_macro_heuristic_final.json",
+    "R5: Multi-Turn Targeted": "results/apps_eval_run_5_multi_turn_targeted_final.json",
+    "R6: Cold-Start TDD": "results/apps_eval_run_6_anchored_tdd_final.json",
+    "R7: Curriculum Phase 1": "results/apps_eval_run_7_curriculum_phase_1_final.json",
+    "R7: Curriculum Phase 2": "results/apps_eval_run_7_curriculum_phase_2_final.json",
 }
 
 
-def load_summary(tag: str) -> dict | None:
-    path = Path(f"../results/apps_eval_{tag}.json")
-    if not path.exists():
-        print(f"Missing: {path} — skipping.")
-        return None
-    with open(path) as f:
-        return json.load(f)["summary"]
+def load_ablation_data():
+    records = []
+    for model_name, filepath in ABLATION_FILES.items():
+        if not Path(filepath).exists():
+            print(f"⚠️ Missing {filepath}")
+            continue
+
+        with open(filepath, "r") as f:
+            data = json.load(f)
+
+        summary = data.get("summary", {})
+
+        # Aggregate
+        records.append(
+            {
+                "Model": model_name,
+                "Difficulty": "Aggregate Profile",
+                "Pass Rate": summary.get("pass_at_1", 0.0) * 100,
+            }
+        )
+
+        # By Difficulty
+        by_diff = summary.get("by_difficulty", {})
+        for diff in ["introductory", "interview", "competition"]:
+            if diff in by_diff:
+                records.append(
+                    {
+                        "Model": model_name,
+                        "Difficulty": diff.capitalize(),
+                        "Pass Rate": by_diff[diff].get("pass_at_1", 0.0) * 100,
+                    }
+                )
+
+    return pd.DataFrame(records)
 
 
-summaries = {label: load_summary(tag) for label, tag in ABLATION_TAGS.items()}
-summaries = {k: v for k, v in summaries.items() if v is not None}
+def plot_unified_matrix(df):
+    if df.empty:
+        print("No data available to plot.")
+        return
 
-# %%
-# ── Main comparison table ─────────────────────────────────────────────────────
+    plt.figure(figsize=(16, 9))
+    sns.set_theme(style="whitegrid")
 
-difficulties = ["introductory", "interview", "competition"]
-rows = []
+    # 4 clean structural groups for visual isolation
+    colors = ["#2c3e50", "#2980b9", "#e67e22", "#e74c3c"]
 
-for label, s in summaries.items():
-    row = {"Condition": label, "Overall": s["pass_at_1"]}
-    for d in difficulties:
-        row[d.capitalize()] = s["by_difficulty"].get(d, {}).get("pass_at_1", 0.0)
-    rows.append(row)
+    ax = sns.barplot(
+        data=df, x="Model", y="Pass Rate", hue="Difficulty", palette=colors
+    )
 
-df = pd.DataFrame(rows).sort_values("Overall", ascending=False)
-print("=== Ablation comparison ===")
-print(df.to_string(index=False, float_format=lambda x: f"{x:.1%}"))
-df.to_csv("../analysis/ablation_comparison.csv", index=False)
-print("Saved: analysis/ablation_comparison.csv")
+    plt.title(
+        "Unified Project Horizon Strategy Matrix (Zero-Shot Pass Rate - All Runs)",
+        fontsize=16,
+        fontweight="bold",
+        pad=20,
+    )
+    plt.ylabel("Definitive Pass Rate (%)", fontsize=12)
+    plt.xlabel("")
+    plt.xticks(rotation=30, ha="right", fontsize=11)
 
-# %%
-# ── Bar chart comparison ──────────────────────────────────────────────────────
+    # Format Y-axis as percentage
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.1f}%"))
 
-fig, ax = plt.subplots(figsize=(12, 5))
-x = np.arange(len(df))
-w = 0.18
-metrics = ["Overall"] + [d.capitalize() for d in difficulties]
-offsets = np.linspace(
-    -(len(metrics) - 1) * w / 2, (len(metrics) - 1) * w / 2, len(metrics)
-)
+    plt.legend(title="", fontsize=11, bbox_to_anchor=(1.01, 1), loc="upper left")
+    sns.despine()
+    plt.tight_layout()
+    plt.savefig("analysis_unified_matrix.png", dpi=300, bbox_inches="tight")
+    print("✅ Saved analysis_unified_matrix.png")
 
-for metric, offset, color in zip(metrics, offsets, COLORS):
-    vals = df[metric].values
-    bars = ax.bar(x + offset, vals, width=w, alpha=0.85, color=color, label=metric)
 
-ax.set_xticks(x)
-ax.set_xticklabels(df["Condition"].values, rotation=12, ha="right", fontsize=9)
-ax.yaxis.set_major_formatter(mticker.PercentFormatter(1.0))
-ax.set_title("Ablation comparison — APPS test pass@1", fontweight="bold")
-ax.set_ylabel("pass@1")
-ax.legend(loc="upper right", fontsize=9)
-
-plt.tight_layout()
-plt.savefig("../analysis/ablation_comparison.png", bbox_inches="tight", dpi=150)
-plt.show()
-print("Saved: analysis/ablation_comparison.png")
-
-# %%
-# ── Delta vs baseline ─────────────────────────────────────────────────────────
-
-baseline_overall = summaries.get("Baseline (no training)", {}).get("pass_at_1", 0)
-
-print("\n=== Delta vs baseline (overall pass@1) ===")
-for label, s in summaries.items():
-    delta = s["pass_at_1"] - baseline_overall
-    marker = "✓" if delta > 0 else "✗"
-    print(f"  {marker} {label:<35} {delta:+.1%}")
+if __name__ == "__main__":
+    print("Aggregating complete ablation files...")
+    df = load_ablation_data()
+    plot_unified_matrix(df)
