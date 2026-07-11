@@ -70,7 +70,7 @@ engine_args = AsyncEngineArgs(
     enable_lora=True,
     max_lora_rank=16,
     gpu_memory_utilization=0.30,
-    max_model_len=8192,
+    max_model_len=16384,
 )
 vllm_engine = AsyncLLMEngine.from_engine_args(engine_args)
 
@@ -114,6 +114,18 @@ def _current_lora_request() -> LoRARequest:
         _LORA_VERSION["v"],
         lora_path="./checkpoint/active_lora",
     )
+
+
+def _lora_checksum() -> float:
+    """Cheap fingerprint of the current LoRA weights. If this does NOT change
+    across training steps, the policy update isn't reaching the adapter and
+    rollouts are frozen — no amount of correct loss math will produce learning.
+    Watch train/lora_checksum in W&B: it MUST move every step."""
+    total = 0.0
+    for name, param in policy_model.named_parameters():
+        if "lora" in name.lower() and param.requires_grad:
+            total += param.detach().float().abs().sum().item()
+    return total
 
 
 # ─── 2. THE INTERACTIVE MULTI-TURN ROLLOUT ───────────────────────────────
@@ -435,12 +447,19 @@ async def main():
 
     start_temp = cfg.get("start_temp", 0.7)
     end_temp = cfg.get("end_temp", 0.2)
-    batch_size = cfg.get("batch_size", 50)
+    batch_size = cfg.get("batch_size", 20)
 
     total_batches = (
         len(dataset) // batch_size + (1 if len(dataset) % batch_size else 0)
     ) * epochs
     global_batch = 0
+
+    # Rolling windows so we can read a trend through the per-batch noise.
+    from collections import deque
+
+    reward_window = deque(maxlen=5)
+    success_window = deque(maxlen=5)
+    prev_checksum = None
 
     for epoch in range(epochs):
         print(f"\n=== Epoch {epoch+1} ===")
@@ -451,7 +470,7 @@ async def main():
             )
             sampling_params = SamplingParams(
                 temperature=current_temp,
-                max_tokens=1500,
+                max_tokens=800,
                 stop=cfg.get("stop_tokens", ["</code>"]),
                 include_stop_str_in_output=True,
                 logprobs=1,  # request behavior logprobs for the importance ratio
@@ -487,6 +506,18 @@ async def main():
                 1, len(trajectories)
             )
 
+            # --- Rolling trend + adapter-swap diagnostic ---
+            reward_window.append(avg_reward)
+            success_window.append(success_rate)
+            rolling_reward = sum(reward_window) / len(reward_window)
+            rolling_success = sum(success_window) / len(success_window)
+
+            checksum = _lora_checksum()
+            checksum_delta = (
+                0.0 if prev_checksum is None else abs(checksum - prev_checksum)
+            )
+            prev_checksum = checksum
+
             batch_errors = Counter()
             for t in trajectories:
                 batch_errors.update(t["errors"])
@@ -495,14 +526,18 @@ async def main():
                 "train/loss": loss,
                 "train/kl_divergence": kl_divergence,
                 "train/avg_reward": avg_reward,
+                "train/rolling_reward": rolling_reward,
                 "train/learning_rate": optimizer.param_groups[0]["lr"],
                 "train/temperature": current_temp,
+                "train/lora_checksum": checksum,
+                "train/lora_checksum_delta": checksum_delta,
                 "tools/execute_calls": total_execute,
                 "tools/generate_tests_calls": total_tests,
                 "tools/invalid_format_errors": total_invalid,
                 "metrics/avg_turns": avg_turns,
                 "metrics/avg_context_length": avg_ctx_len,
                 "metrics/success_rate": success_rate,
+                "metrics/rolling_success": rolling_success,
                 "epoch": epoch + 1,
                 "global_step": global_batch,
             }
@@ -510,9 +545,16 @@ async def main():
                 log_metrics[f"errors/{err_type}"] = count
             wandb.log(log_metrics)
 
+            swap_flag = (
+                ""
+                if checksum_delta > 0 or prev_checksum is None
+                else "  ⚠️ADAPTER FROZEN"
+            )
             print(
                 f"Batch {global_batch+1}/{total_batches} | Temp {current_temp:.3f} "
-                f"| Reward {avg_reward:.3f} | Success {success_rate:.2%} | Loss {loss:.4f}"
+                f"| R {avg_reward:.3f} (roll {rolling_reward:.3f}) "
+                f"| Succ {success_rate:.2%} (roll {rolling_success:.2%}) "
+                f"| Loss {loss:.4f} | Δwts {checksum_delta:.2e}{swap_flag}"
             )
             global_batch += 1
 

@@ -48,10 +48,67 @@ def main():
     random.seed(42)
     random.shuffle(problems)
 
-    # 🚨 STRICT ABLATION CAP: Lock to exactly 500 problems
-    problems = problems[:500]
+    # ─── STRATIFIED CAP ACROSS DIFFICULTY ──────────────────────────────────
+    # Cap total training problems while preserving the difficulty distribution.
+    # `train_cap` and `stratify_mode` come from train.yaml so run_pipeline controls them.
+    train_cap = cfg.get("train_cap", ablation_cfg.get("train_cap", 1000))
+    stratify_mode = cfg.get("stratify_mode", "proportional")  # or "balanced"
 
-    # Automatically slice the dataset based on the target filename
+    from collections import defaultdict
+
+    by_diff = defaultdict(list)
+    for p in problems:
+        by_diff[p.difficulty].append(p)
+
+    diff_order = ["introductory", "interview", "competition"]
+    available = {d: len(by_diff.get(d, [])) for d in diff_order}
+    total_available = sum(available.values())
+    print(
+        f"Available verified train problems by difficulty: {available} (total {total_available})"
+    )
+
+    if train_cap >= total_available:
+        # Use everything, but still report the distribution.
+        selected = []
+        for d in diff_order:
+            selected.extend(by_diff.get(d, []))
+        print(
+            f"train_cap ({train_cap}) >= available ({total_available}); using all problems."
+        )
+    elif stratify_mode == "balanced":
+        # Equal count per difficulty, clamped by availability.
+        per = train_cap // len(diff_order)
+        selected = []
+        for d in diff_order:
+            pool = by_diff.get(d, [])
+            random.shuffle(pool)
+            take = pool[:per]
+            selected.extend(take)
+            print(f"  balanced {d}: took {len(take)} (requested {per})")
+    else:
+        # Proportional: preserve the natural difficulty ratio.
+        selected = []
+        for d in diff_order:
+            pool = by_diff.get(d, [])
+            random.shuffle(pool)
+            share = int(round(train_cap * (available[d] / total_available)))
+            take = pool[:share]
+            selected.extend(take)
+            print(
+                f"  proportional {d}: took {len(take)} "
+                f"({available[d]/total_available:.1%} of cap {train_cap})"
+            )
+
+    random.shuffle(selected)  # mix difficulties so batches are heterogeneous
+    problems = selected
+    print(
+        f"Stratified training set locked: {len(problems)} problems "
+        f"(mode={stratify_mode}, cap={train_cap})"
+    )
+
+    # Automatically slice the dataset based on the target filename (curriculum).
+    # NOTE: phase slicing now operates on the already-stratified set, so each
+    # curriculum half retains a difficulty mix rather than being ordered by it.
     if "phase1" in output_path_str:
         problems = problems[: len(problems) // 2]
         print(f"Curriculum Phase 1 Detected: Subsetting first {len(problems)} rows.")
