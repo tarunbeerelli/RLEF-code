@@ -13,6 +13,7 @@ FIXES vs. previous version
    want pass@k with sampling, set eval temperature > 0 and n > 1 and aggregate.
 """
 
+import argparse
 import asyncio
 import json
 import os
@@ -118,7 +119,7 @@ async def evaluate_single_episode(
     }
 
 
-async def main():
+async def main(baseline: bool = False):
     with open("configs/train.yaml", "r") as f:
         cfg = yaml.safe_load(f)
 
@@ -129,6 +130,8 @@ async def main():
     dataset_path = eval_cfg.get("dataset_path", "./data/apps_eval.jsonl")
     lora_path = eval_cfg.get("lora_path", "./checkpoint/active_lora")
     output_filename = eval_cfg.get("output_filename", "apps_eval_output.json")
+    if baseline:
+        output_filename = output_filename.replace(".json", "") + "_BASELINE.json"
 
     raw_dataset = []
     with open(dataset_path, "r") as f:
@@ -140,14 +143,19 @@ async def main():
     for diff in ["introductory", "interview", "competition"]:
         diff_problems = [d for d in raw_dataset if d.get("difficulty") == diff]
         random.shuffle(diff_problems)
-        dataset.extend(diff_problems[:250])
+        dataset.extend(diff_problems[:500])
 
     print(f"Loaded {len(dataset)} eval problems from {dataset_path}")
-    print(f"Targeting LoRA checkpoint: {lora_path}")
+    if baseline:
+        print("MODE: BASELINE — evaluating BASE model (no LoRA adapter).")
+    else:
+        print(f"Targeting LoRA checkpoint: {lora_path}")
 
     eval_tags = cfg.get("tags", []).copy()
     if "eval" not in eval_tags:
         eval_tags.append("eval")
+    if baseline and "baseline" not in eval_tags:
+        eval_tags.append("baseline")
 
     wandb.init(
         project=cfg.get("wandb_project", "rlef-code"),
@@ -170,18 +178,21 @@ async def main():
 
     sampling_params = SamplingParams(
         temperature=0.0,  # greedy -> deterministic pass@1
-        max_tokens=1500,
+        max_tokens=1200,
         stop=cfg.get("stop_tokens", ["</code>"]),
         include_stop_str_in_output=True,
     )
 
-    try:
-        active_lora = LoRARequest("eval_policy", 1, lora_path=lora_path)
-    except Exception as e:
-        print(
-            f"Warning: could not load LoRA at {lora_path}. Evaluating base model. {e}"
-        )
-        active_lora = None
+    if baseline:
+        active_lora = None  # evaluate the raw base model on the identical harness
+    else:
+        try:
+            active_lora = LoRARequest("eval_policy", 1, lora_path=lora_path)
+        except Exception as e:
+            print(
+                f"Warning: could not load LoRA at {lora_path}. Evaluating base model. {e}"
+            )
+            active_lora = None
 
     semaphore = asyncio.Semaphore(50)
 
@@ -233,6 +244,13 @@ async def main():
     for k, v in metrics.items():
         print(f"{k}: {v:.2%}" if isinstance(v, float) else f"{k}: {v}")
 
+    # In baseline mode, remap eval/* -> eval_baseline/* so base and trained numbers
+    # are distinct series in W&B and can be overlaid for the base-vs-trained delta.
+    if baseline:
+        metrics = {
+            (k.replace("eval/", "eval_baseline/") if k.startswith("eval/") else k): v
+            for k, v in metrics.items()
+        }
     wandb.log(metrics)
 
     os.makedirs("results", exist_ok=True)
@@ -262,5 +280,13 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--baseline",
+        action="store_true",
+        help="Evaluate the BASE model with no LoRA on the identical harness. "
+        "Gives the denominator for every trained-run comparison.",
+    )
+    args = parser.parse_args()
+    asyncio.run(main(baseline=args.baseline))
     wandb.finish()

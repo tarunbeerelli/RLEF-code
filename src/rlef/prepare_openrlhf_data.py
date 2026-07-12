@@ -51,7 +51,7 @@ def main():
     # ─── STRATIFIED CAP ACROSS DIFFICULTY ──────────────────────────────────
     # Cap total training problems while preserving the difficulty distribution.
     # `train_cap` and `stratify_mode` come from train.yaml so run_pipeline controls them.
-    train_cap = cfg.get("train_cap", ablation_cfg.get("train_cap", 1000))
+    train_cap = cfg.get("train_cap", ablation_cfg.get("train_cap", 1200))
     stratify_mode = cfg.get("stratify_mode", "proportional")  # or "balanced"
 
     from collections import defaultdict

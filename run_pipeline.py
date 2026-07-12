@@ -131,12 +131,12 @@ def update_yaml_config(run_config: dict):
         "tags": run_config["tags"],
         "num_epochs": run_config.get("num_epochs", 3),
         "start_temp": run_config.get("start_temp", 0.7),
-        "end_temp": run_config.get("end_temp", 0.2),
+        "end_temp": run_config.get("end_temp", 0.7),  # fixed temp: no across-run anneal
         "batch_size": run_config.get(
             "batch_size", 32
         ),  # larger batch -> less noisy GRPO advantage
         "train_cap": run_config.get(
-            "train_cap", 1000
+            "train_cap", 1200
         ),  # stratified total training problems
         "stratify_mode": run_config.get("stratify_mode", "proportional"),
         "kl_beta": run_config.get("kl_beta", 0.04),

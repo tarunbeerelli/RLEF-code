@@ -50,7 +50,7 @@ except Exception:
 # ── Reference validation: try BOTH harness routings, keep the best ────────────
 
 
-def _best_reference_pass_rate(p, max_solutions: int = 5):
+def _best_reference_pass_rate(p, max_solutions: int = 1):
     """Return (best_pass_rate, best_error_types) across up to `max_solutions`
     reference solutions, trying both call-based and stdin harness routings for
     each. A reference is 'good' if it passes under EITHER routing."""
@@ -185,7 +185,7 @@ def main():
     parser.add_argument(
         "--splits",
         nargs="+",
-        default=["train"],
+        default=["test"],
         help="Which splits to sweep (e.g. train test).",
     )
     parser.add_argument(
