@@ -9,7 +9,7 @@ tags: ["run_5", "multi_turn", "targeted_feedback", "linear_reward"]
 # ─── 2. TRAINING HYPERPARAMETERS ─────────────────────────────────────────────
 num_epochs: 3
 start_temp: 0.7
-end_temp: 0.2
+end_temp: 0.7
 batch_size: 50
 stop_tokens: ["</code>"]
 

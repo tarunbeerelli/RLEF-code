@@ -143,7 +143,12 @@ async def run_single_episode(
     completion_texts = []  # the exact text we will train on (the taken action)
     behavior_logprobs = []  # per-turn sum logprob under the sampling policy, if available
     final_reward = 0.0
-    episode_stats = {"execute": 0, "generate_tests": 0, "invalid_format": 0}
+    episode_stats = {
+        "execute": 0,
+        "generate_tests": 0,
+        "invalid_format": 0,
+        "truncated": 0,
+    }
     episode_errors = []
     pass_rate = 0.0
 
@@ -177,6 +182,11 @@ async def run_single_episode(
         completions.append(completion)
         completion_texts.append(completion)
 
+        # Was this completion cut off by max_tokens? finish_reason == "length"
+        # means truncated (raising max_tokens would help); "stop" means it ended
+        # cleanly on </code> (raising max_tokens would NOT help).
+        was_truncated = getattr(out, "finish_reason", None) == "length"
+
         # Capture behavior-policy logprob sum for this completion if vLLM returned it.
         try:
             if out.logprobs:
@@ -194,6 +204,8 @@ async def run_single_episode(
 
         if not parsed["is_valid"]:
             episode_stats["invalid_format"] += 1
+            if was_truncated:
+                episode_stats["truncated"] = episode_stats.get("truncated", 0) + 1
             feedback_str = "CRITICAL ERROR: Invalid format. Wrap executable logic inside <code>...</code>."
             current_context += (
                 f"{completion}<|im_end|>\n<|im_start|>user\n"
@@ -446,7 +458,7 @@ async def main():
     print(f"Loaded {len(dataset)} training problems from {dataset_path}.")
 
     start_temp = cfg.get("start_temp", 0.7)
-    end_temp = cfg.get("end_temp", 0.2)
+    end_temp = cfg.get("end_temp", 0.7)  # default = fixed temp (no across-run anneal)
     batch_size = cfg.get("batch_size", 20)
 
     total_batches = (
@@ -463,6 +475,13 @@ async def main():
 
     for epoch in range(epochs):
         print(f"\n=== Epoch {epoch+1} ===")
+        # Re-shuffle each epoch so batch composition (and its difficulty mix)
+        # differs across epochs. Without this, the same hard cluster of problems
+        # lands in the same relative step every epoch, producing repeating dips
+        # in success/reward that look like instability but are just order effects.
+        import random as _random
+
+        _random.Random(1234 + epoch).shuffle(dataset)
         for i in range(0, len(dataset), batch_size):
             batch_data = dataset[i : i + batch_size]
             current_temp = start_temp - (start_temp - end_temp) * (
@@ -470,7 +489,7 @@ async def main():
             )
             sampling_params = SamplingParams(
                 temperature=current_temp,
-                max_tokens=800,
+                max_tokens=1200,
                 stop=cfg.get("stop_tokens", ["</code>"]),
                 include_stop_str_in_output=True,
                 logprobs=1,  # request behavior logprobs for the importance ratio
@@ -496,6 +515,7 @@ async def main():
             total_execute = sum(t["stats"]["execute"] for t in trajectories)
             total_tests = sum(t["stats"]["generate_tests"] for t in trajectories)
             total_invalid = sum(t["stats"]["invalid_format"] for t in trajectories)
+            total_truncated = sum(t["stats"].get("truncated", 0) for t in trajectories)
             avg_turns = sum(t["turns_taken"] for t in trajectories) / max(
                 1, len(trajectories)
             )
@@ -534,6 +554,7 @@ async def main():
                 "tools/execute_calls": total_execute,
                 "tools/generate_tests_calls": total_tests,
                 "tools/invalid_format_errors": total_invalid,
+                "tools/truncated_completions": total_truncated,
                 "metrics/avg_turns": avg_turns,
                 "metrics/avg_context_length": avg_ctx_len,
                 "metrics/success_rate": success_rate,
