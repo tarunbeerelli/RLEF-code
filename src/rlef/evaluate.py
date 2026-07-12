@@ -171,8 +171,8 @@ async def main(baseline: bool = False):
         enable_prefix_caching=True,
         enable_lora=True,
         max_lora_rank=16,
-        gpu_memory_utilization=0.60,
-        max_model_len=8192,
+        gpu_memory_utilization=0.75,
+        max_model_len=16384,
     )
     vllm_engine = AsyncLLMEngine.from_engine_args(engine_args)
 
