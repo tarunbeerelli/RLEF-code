@@ -143,7 +143,7 @@ async def main(baseline: bool = False):
     for diff in ["introductory", "interview", "competition"]:
         diff_problems = [d for d in raw_dataset if d.get("difficulty") == diff]
         random.shuffle(diff_problems)
-        dataset.extend(diff_problems[:500])
+        dataset.extend(diff_problems[:250])
 
     print(f"Loaded {len(dataset)} eval problems from {dataset_path}")
     if baseline:
@@ -157,9 +157,15 @@ async def main(baseline: bool = False):
     if baseline and "baseline" not in eval_tags:
         eval_tags.append("baseline")
 
+    base_name = cfg.get("run_name")
+    if base_name:
+        eval_run_name = f"{base_name}_eval" + ("_baseline" if baseline else "")
+    else:
+        eval_run_name = None
     wandb.init(
-        project=cfg.get("wandb_project", "rlef-code"),
+        project=cfg.get("wandb_project", "rlef-code2"),
         entity=cfg.get("wandb_entity", "tarunbeerelli-northeastern-university"),
+        name=eval_run_name,
         config=cfg,
         tags=eval_tags,
         job_type="evaluation",
@@ -171,8 +177,8 @@ async def main(baseline: bool = False):
         enable_prefix_caching=True,
         enable_lora=True,
         max_lora_rank=16,
-        gpu_memory_utilization=0.75,
-        max_model_len=16384,
+        gpu_memory_utilization=0.60,
+        max_model_len=8192,
     )
     vllm_engine = AsyncLLMEngine.from_engine_args(engine_args)
 

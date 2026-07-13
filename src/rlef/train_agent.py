@@ -454,8 +454,11 @@ async def main():
             dataset.append(json.loads(line))
 
     wandb.init(
-        project=cfg.get("wandb_project", "rlef-code"),
+        project=cfg.get("wandb_project", "rlef-code2"),
         entity=cfg.get("wandb_entity", "tarunbeerelli-northeastern-university"),
+        name=cfg.get(
+            "run_name"
+        ),  # descriptive name; None -> W&B random name (manual runs)
         config=cfg,
         tags=cfg.get("tags", []),
     )

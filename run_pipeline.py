@@ -128,6 +128,9 @@ def update_yaml_config(run_config: dict):
     yaml_structure = {
         "wandb_project": run_config.get("wandb_project", "rlef-code2"),
         "wandb_entity": "tarunbeerelli-northeastern-university",
+        "run_name": run_config[
+            "name"
+        ],  # descriptive W&B run name (e.g. run_1_sparse_baseline)
         "tags": run_config["tags"],
         "num_epochs": run_config.get("num_epochs", 1),
         "start_temp": run_config.get("start_temp", 0.7),
