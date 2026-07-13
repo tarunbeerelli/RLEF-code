@@ -90,15 +90,18 @@ if lora_resume and os.path.exists(lora_resume):
     policy_model = PeftModel.from_pretrained(base_model, lora_resume, is_trainable=True)
 else:
     print("🌟 Fresh LoRA weights...")
+    lora_rank = cfg.get("lora_rank", 16)
     lora_config = LoraConfig(
-        r=16,
-        lora_alpha=32,
+        r=lora_rank,
+        lora_alpha=cfg.get("lora_alpha", lora_rank * 2),  # scale alpha with rank
         lora_dropout=0.0,
         target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],
     )
     policy_model = get_peft_model(base_model, lora_config)
 
-optimizer = torch.optim.AdamW(policy_model.parameters(), lr=5e-6)
+optimizer = torch.optim.AdamW(
+    policy_model.parameters(), lr=cfg.get("learning_rate", 5e-6)
+)
 os.makedirs("./checkpoint/active_lora", exist_ok=True)
 policy_model.save_pretrained("./checkpoint/active_lora")
 
@@ -137,6 +140,7 @@ async def run_single_episode(
     lora_req: LoRARequest,
     sampling_params: SamplingParams,
     ablation_cfg: dict,
+    gen_idx: int = 0,
 ):
     current_context = prompt_text
     completions = []  # raw completion text per turn
@@ -170,7 +174,7 @@ async def run_single_episode(
         request_generator = vllm_engine.generate(
             prompt=current_context,
             sampling_params=sampling_params,
-            request_id=f"req_{problem_data['problem_id']}_{turn}_{lora_req.lora_int_id}",
+            request_id=f"req_{problem_data['problem_id']}_g{gen_idx}_{turn}_{lora_req.lora_int_id}",
             lora_request=lora_req,
         )
         final_result = None
@@ -497,11 +501,23 @@ async def main():
             # Fresh LoRA id each batch -> forces vLLM to load the latest adapter.
             active_lora = _current_lora_request()
 
+            # MULTI-GENERATION: sample num_generations rollouts PER problem so GRPO
+            # normalizes advantage WITHIN each problem group (its intended design),
+            # instead of across unrelated problems. This gives a real gradient on
+            # hard problems: if 1 of 8 attempts solves it, that attempt gets positive
+            # advantage relative to its 7 siblings. Single-generation could never do this.
+            num_generations = cfg.get("num_generations", 1)
             tasks = [
                 run_single_episode(
-                    data["prompt"], data, active_lora, sampling_params, ablation_cfg
+                    data["prompt"],
+                    data,
+                    active_lora,
+                    sampling_params,
+                    ablation_cfg,
+                    gen_idx=g,
                 )
                 for data in batch_data
+                for g in range(num_generations)
             ]
             trajectories = await asyncio.gather(*tasks)
 

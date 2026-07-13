@@ -126,15 +126,21 @@ def update_yaml_config(run_config: dict):
     )
 
     yaml_structure = {
-        "wandb_project": "rlef-code",
+        "wandb_project": run_config.get("wandb_project", "rlef-code2"),
         "wandb_entity": "tarunbeerelli-northeastern-university",
         "tags": run_config["tags"],
-        "num_epochs": run_config.get("num_epochs", 3),
+        "num_epochs": run_config.get("num_epochs", 1),
         "start_temp": run_config.get("start_temp", 0.7),
         "end_temp": run_config.get("end_temp", 0.7),  # fixed temp: no across-run anneal
         "batch_size": run_config.get(
-            "batch_size", 32
-        ),  # larger batch -> less noisy GRPO advantage
+            "batch_size", 8
+        ),  # bs x num_generations = concurrent load
+        "num_generations": run_config.get(
+            "num_generations", 8
+        ),  # rollouts per problem for GRPO groups
+        "learning_rate": run_config.get("learning_rate", 1.0e-4),
+        "lora_rank": run_config.get("lora_rank", 32),
+        "lora_alpha": run_config.get("lora_alpha", 64),
         "train_cap": run_config.get(
             "train_cap", 1200
         ),  # stratified total training problems
