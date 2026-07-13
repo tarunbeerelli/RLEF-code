@@ -22,11 +22,12 @@ poetry install
 echo "[3/5] Fetching & Preparing Datasets..."
 # Download the raw APPS dataset
 bash scripts/download_apps.sh
-poetry run python clean_and_optimize_dataset.py
+poetry run python clean_and_optimize_dataset.py --apply --splits "train" --workers 8
+poetry run python clean_and_optimize_dataset.py --apply --splits "test" --workers 12
 
 # Pre-bake the generic dataset and physically carve the Curriculum splits for Run 7
 echo "Generating curriculum splits..."
-poetry run python src/rlef/prepare_openrlhf_data.py
+#poetry run python src/rlef/prepare_openrlhf_data.py
 #poetry run python src/rlef/split_dataset.py
 
 echo "[4/5] Authentication..."
@@ -35,7 +36,7 @@ echo "Weights & Biases Login:"
 poetry run wandb login
 
 echo "HuggingFace Hub Login:"
-bash hf auth login
+poetry run hf auth login
 
 echo "[5/5] Running Pre-Flight Validation Suite..."
 # Run the pure logic unit tests to verify prompt formats and parsers
