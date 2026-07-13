@@ -68,7 +68,9 @@ engine_args = AsyncEngineArgs(
     model=MODEL_NAME,
     enable_prefix_caching=True,
     enable_lora=True,
-    max_lora_rank=16,
+    max_lora_rank=cfg.get(
+        "lora_rank", 16
+    ),  # MUST match LoraConfig rank or vLLM rejects the adapter
     gpu_memory_utilization=0.30,
     max_model_len=16384,
 )
@@ -478,6 +480,11 @@ async def main():
 
     reward_window = deque(maxlen=5)
     success_window = deque(maxlen=5)
+    kl_window = deque(maxlen=5)  # for KL early-stop
+    max_kl_stop = cfg.get(
+        "max_kl_stop", None
+    )  # halt if rolling KL exceeds this (None = disabled)
+    stop_training = False
     prev_checksum = None
 
     for epoch in range(epochs):
@@ -528,7 +535,7 @@ async def main():
                 1, len(trajectories)
             )
             loss, kl_divergence = grpo_update_step(
-                trajectories, beta=cfg.get("kl_beta", 0.04)
+                trajectories, beta=cfg.get("kl_beta", 0.1)
             )
 
             total_execute = sum(t["stats"]["execute"] for t in trajectories)
@@ -548,8 +555,10 @@ async def main():
             # --- Rolling trend + adapter-swap diagnostic ---
             reward_window.append(avg_reward)
             success_window.append(success_rate)
+            kl_window.append(kl_divergence)
             rolling_reward = sum(reward_window) / len(reward_window)
             rolling_success = sum(success_window) / len(success_window)
+            rolling_kl = sum(kl_window) / len(kl_window)
 
             checksum = _lora_checksum()
             checksum_delta = (
@@ -564,6 +573,7 @@ async def main():
             log_metrics = {
                 "train/loss": loss,
                 "train/kl_divergence": kl_divergence,
+                "train/rolling_kl": rolling_kl,
                 "train/avg_reward": avg_reward,
                 "train/rolling_reward": rolling_reward,
                 "train/learning_rate": optimizer.param_groups[0]["lr"],
@@ -597,6 +607,38 @@ async def main():
                 f"| Loss {loss:.4f} | Δwts {checksum_delta:.2e}{swap_flag}"
             )
             global_batch += 1
+
+            # --- KL EARLY-STOP ---
+            # If the rolling KL blows past the threshold, the policy is diverging
+            # from base (random-walk regime) rather than learning. Everything past
+            # this point last run was wasted compute. Halt cleanly and keep the
+            # last good checkpoint. Warmup guard: don't trigger in the first 5 steps
+            # where KL is naturally noisy/small.
+            if (
+                max_kl_stop is not None
+                and global_batch > 5
+                and len(kl_window) == kl_window.maxlen
+                and rolling_kl > max_kl_stop
+            ):
+                print(
+                    f"\n⛔ KL EARLY-STOP: rolling KL {rolling_kl:.3f} exceeded "
+                    f"max_kl_stop {max_kl_stop}. Policy diverging — halting to avoid "
+                    f"wasted compute. Last checkpoint retained."
+                )
+                stop_training = True
+                # Archive current adapter to the epoch path eval expects, since we're
+                # breaking before the normal end-of-epoch save below.
+                _stop_dir = f"./checkpoints/epoch_{epoch + 1}"
+                os.makedirs(_stop_dir, exist_ok=True)
+                if os.path.exists("./checkpoint/active_lora"):
+                    shutil.copytree(
+                        "./checkpoint/active_lora", _stop_dir, dirs_exist_ok=True
+                    )
+                    print(f"Saved early-stop checkpoint to {_stop_dir}")
+                break
+
+        if stop_training:
+            break
 
         epoch_dir = f"./checkpoints/epoch_{epoch + 1}"
         os.makedirs(epoch_dir, exist_ok=True)

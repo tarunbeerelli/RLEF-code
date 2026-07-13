@@ -9,22 +9,24 @@ wandb_entity: "tarunbeerelli-northeastern-university"
 tags: ["diagnostic", "multi_gen", "high_lr", "rank32", "run_5_base"]
 
 # ─── 2. TRAINING HYPERPARAMETERS ─────────────────────────────────────────────
-num_epochs: 4                 # was 3 — train longer to test the undertraining hypothesis
+num_epochs: 1                 # 1 epoch @ bs=8 = ~150 updates, MORE than prior 3-epoch runs.
+                              # Multi-gen effect shows per-step from step 1, so no need for 4.
 start_temp: 0.7
 end_temp: 0.7                 # fixed temp (no across-run anneal)
 
 # CRITICAL: batch_size x num_generations = concurrent episodes per batch.
 # Old effective load was ~50. 8 x 8 = 64, close to that. Do NOT set batch_size 50
 # here or you'll launch 400 concurrent multi-turn episodes and OOM / stall.
-batch_size: 8
-num_generations: 8           # NEW: 8 rollouts per problem -> GRPO normalizes WITHIN problem
+batch_size: 10               # bumped from 8 (H200 headroom); 10 x 12 = 120 concurrent
+num_generations: 12          # bumped from 8 -> deeper GRPO groups, better within-problem gradient
 
 # LoRA capacity + learning rate: the levers that test "did the policy barely move?"
-learning_rate: 1.0e-4        # was 5e-6 — 20x higher to actually move the policy
+learning_rate: 2.0e-5        # was 1e-4 (diverged/unstable) and 5e-6 (barely moved); middle ground
 lora_rank: 32                # was 16 — more capacity
 lora_alpha: 64               # scaled 2x rank
 
-kl_beta: 0.04
+kl_beta: 0.1                 # tighter KL leash (was 0.04) to prevent the policy random-walk
+max_kl_stop: 0.5             # hard early-stop: halt training if rolling KL exceeds this
 stop_tokens: ["</code>"]
 
 # ─── 3. ABLATION SWITCHBOARD ─────────────────────────────────────────────────
@@ -49,5 +51,5 @@ stratify_mode: "proportional"
 # ─── 5. EVALUATION ───────────────────────────────────────────────────────────
 evaluation:
   dataset_path: "./data/apps_eval.jsonl"
-  lora_path: "./checkpoints/epoch_4"     # matches num_epochs
+  lora_path: "./checkpoints/epoch_1"     # matches num_epochs=1
   output_filename: "apps_eval_diagnostic.json"
