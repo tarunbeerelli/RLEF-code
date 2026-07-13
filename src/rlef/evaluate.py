@@ -176,7 +176,7 @@ async def main(baseline: bool = False):
         model="Qwen/Qwen2.5-Coder-7B-Instruct",
         enable_prefix_caching=True,
         enable_lora=True,
-        max_lora_rank=16,
+        max_lora_rank=cfg.get("lora_rank", 16),  # MUST match the trained adapter's rank
         gpu_memory_utilization=0.60,
         max_model_len=8192,
     )
