@@ -22,9 +22,51 @@ import yaml
 import wandb
 from collections import Counter
 from rlef.reward import execution_reward
-from rlef.prompt import parse_output
+from rlef.prompt import parse_output, format_prompt
+from transformers import AutoTokenizer
 from vllm import AsyncEngineArgs, AsyncLLMEngine, SamplingParams
 from vllm.lora.request import LoRARequest
+
+
+def build_eval_prompt(problem_data, ablation_cfg, tokenizer):
+    """
+    Rebuild the eval prompt per-arm from the raw question so the system prompt
+    matches THIS arm's max_turns AND feedback_type. Mirrors prepare_openrlhf_data
+    exactly, including the edge-case ground-truth anchor injection, so train and
+    eval prompts are identical in structure.
+    Falls back to the stored one-shot `prompt` if raw question is unavailable
+    (legacy eval files).
+    """
+    question = problem_data.get("question")
+    if question is None:
+        return problem_data["prompt"]  # legacy fallback
+
+    # Reconstruct a minimal APPSProblem-like object for format_prompt.
+    class _P:
+        pass
+
+    p = _P()
+    p.question = question
+    p.problem_id = problem_data.get("problem_id")
+    p.difficulty = problem_data.get("difficulty")
+    p.inputs = problem_data.get("inputs", [])
+    p.outputs = problem_data.get("outputs", [])
+    p.fn_name = problem_data.get("fn_name")
+
+    # Edge-case anchor injection — MUST match prepare_openrlhf_data.
+    if ablation_cfg.get("use_edge_cases") and p.inputs and p.outputs and p.fn_name:
+        anchor_text = (
+            "\n\n=== GROUND TRUTH ANCHOR ===\n"
+            "Use this exact syntax for your <edge_cases> block:\n"
+            f"assert {p.fn_name}({repr(p.inputs[0])}) == {repr(p.outputs[0])}\n"
+            "===========================\n"
+        )
+        p.question = p.question.strip() + anchor_text
+
+    messages = format_prompt(p, ablation_cfg)
+    return tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
 
 
 async def evaluate_single_episode(
@@ -93,10 +135,24 @@ async def evaluate_single_episode(
         if final_pass_rate == 1.0:
             break
 
-        if feedback_type == "last_failed":
+        # Feedback string MUST mirror train_agent.py exactly, or arms are
+        # evaluated off-distribution (esp. consolidated, which was previously
+        # collapsed into the generic 'Please revise' branch).
+        if feedback_type == "none":
+            feedback_str = "Execution failed. Try a different algorithmic approach."
+        elif feedback_type == "consolidated":
+            err_counts = Counter(turn_errors)
+            err_str = ", ".join(f"{v} {k}" for k, v in err_counts.items())
+            feedback_str = (
+                f"Execution Pass Rate: {final_pass_rate*100:.1f}%. Errors: {err_str}"
+            )
+        elif feedback_type == "last_failed":
             feedback_str = f"Execution Pass Rate: {final_pass_rate*100:.1f}%\n"
             if len(inputs) > 0 and final_pass_rate < 1.0:
-                feedback_str += f"Failed on test case:\n- Input: {inputs[0]}\n- Expected Output: {outputs[0]}"
+                feedback_str += (
+                    f"Failed on test case:\n- Input: {inputs[0]}\n"
+                    f"- Expected Output: {outputs[0]}"
+                )
         else:
             feedback_str = (
                 f"Execution Pass Rate: {final_pass_rate*100:.1f}%. Please revise."
@@ -184,6 +240,10 @@ async def main(baseline: bool = False):
     )
     vllm_engine = AsyncLLMEngine.from_engine_args(engine_args)
 
+    # Tokenizer for per-arm eval-prompt rebuild (system prompt must match this
+    # arm's max_turns + feedback_type; see build_eval_prompt).
+    eval_tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Coder-7B-Instruct")
+
     sampling_params = SamplingParams(
         temperature=0.0,  # greedy -> deterministic pass@1
         max_tokens=cfg.get("max_tokens", 1200),
@@ -206,8 +266,9 @@ async def main(baseline: bool = False):
 
     async def bounded_eval(data):
         async with semaphore:
+            eval_prompt = build_eval_prompt(data, ablation_cfg, eval_tokenizer)
             return await evaluate_single_episode(
-                data["prompt"],
+                eval_prompt,
                 data,
                 vllm_engine,
                 active_lora,

@@ -8,26 +8,49 @@ import yaml
 import sys
 import os
 
-# ─── 1. STAGE-1 FEEDBACK SCREEN ──────────────────────────────────────────────
-# Cheap diagnostic to resolve the feedback_type categorical (standard vs
-# consolidated vs last_failed). Everything held fixed EXCEPT feedback_type:
-#   - linear pass-rate reward ON (dense info is the settled win)
-#   - multi-turn ON at 3 turns (reduced from 5 for the screen)
-#   - all shaping bonuses ON, use_edge_cases OFF (that's Stage 2)
-#   - train_cap 300 (stratified ~190/78/32), 1 epoch, 10x10 = 100 concurrent
-#   - max_tokens 1200 SAME across all three arms (do NOT vary — would confound)
-#   - full 702 eval (keep competition visibility)
-# Winner's feedback_type carries into Stage 2 (example-injection, edge-cases)
-# and the final best model.
+# ─── 1. RUN SEQUENCE ─────────────────────────────────────────────────────────
+# Part A: RE-EVAL the three screen checkpoints (3/4/5) under the CORRECTED
+#         per-arm eval prompt (right max_turns AND right feedback_type, plus
+#         eval feedback strings now mirror training exactly). No retraining —
+#         just a clean feedback comparison on checkpoints we already have.
+# Part B: BUILD sequence, concluding last_failed is the feedback winner:
+#   - run_5_proper: last_failed @ train_cap 1200 (doubles as curriculum phase 1)
+#   - run_6_edge_cases: winner + edge_cases + turn-0 anchor @ train_cap 1500
+#   - phase_2: run_6 specs on top of phase_1 checkpoint @ train_cap 1200
+# All build runs: 1 epoch, bs 10 x 12 gen = 120 concurrent, stable optimizer.
 
-_SCREEN_COMMON = {
+# Shared physics for the multi-turn build runs.
+_BUILD_COMMON = {
+    "max_turns": 3,
+    "use_linear_pass_rate": True,
+    "use_step_credit": True,
+    "use_turn_penalty": True,
+    "use_feedback_bonus": True,
+    "num_epochs": 1,
+    "batch_size": 10,
+    "num_generations": 12,  # 10 x 12 = 120 concurrent (VRAM-checked below)
+    "learning_rate": 2.0e-5,
+    "lora_rank": 32,
+    "lora_alpha": 64,
+    "kl_beta": 0.1,
+    "max_kl_stop": 0.5,
+    "max_model_len": 16384,
+    "max_tokens": 1200,
+    "gpu_memory_utilization": 0.48,  # 120 concurrent @ 16384 peak needs ~63GB vLLM; 0.48=68GB budget
+    "start_temp": 0.7,
+    "end_temp": 0.7,
+}
+
+# Physics shared by the three eval-only re-evals (must match how they were TRAINED:
+# screen arms were max_turns 3, so eval rebuilds the prompt at max_turns 3).
+_REEVAL_COMMON = {
+    "eval_only": True,
     "max_turns": 3,
     "use_linear_pass_rate": True,
     "use_step_credit": True,
     "use_turn_penalty": True,
     "use_feedback_bonus": True,
     "use_edge_cases": False,
-    "train_cap": 300,
     "num_epochs": 1,
     "batch_size": 10,
     "num_generations": 10,
@@ -38,29 +61,76 @@ _SCREEN_COMMON = {
     "max_kl_stop": 0.5,
     "max_model_len": 16384,
     "max_tokens": 1200,
-    "gpu_memory_utilization": 0.42,
+    "gpu_memory_utilization": 0.60,  # eval-only: no training memory, can use more
     "start_temp": 0.7,
     "end_temp": 0.7,
+    "train_cap": 300,  # unused in eval_only but kept for config completeness
 }
 
 RUNS = [
+    # ── Part A: corrected re-eval of the three screen checkpoints ──
     {
-        **_SCREEN_COMMON,
-        "name": "screen_standard",
-        "tags": ["screen", "feedback_standard"],
+        **_REEVAL_COMMON,
+        "name": "reeval_screen_standard",
+        "tags": ["reeval", "feedback_standard"],
         "feedback_type": "standard",
+        "eval_checkpoint": "./checkpoints/screen_standard_final",
     },
     {
-        **_SCREEN_COMMON,
-        "name": "screen_consolidated",
-        "tags": ["screen", "feedback_consolidated"],
+        **_REEVAL_COMMON,
+        "name": "reeval_screen_consolidated",
+        "tags": ["reeval", "feedback_consolidated"],
         "feedback_type": "consolidated",
+        "eval_checkpoint": "./checkpoints/screen_consolidated_final",
     },
     {
-        **_SCREEN_COMMON,
-        "name": "screen_last_failed",
-        "tags": ["screen", "feedback_last_failed"],
+        **_REEVAL_COMMON,
+        "name": "reeval_screen_last_failed",
+        "tags": ["reeval", "feedback_last_failed"],
         "feedback_type": "last_failed",
+        "eval_checkpoint": "./checkpoints/screen_last_failed_final",
+    },
+    # ── Part B: build sequence (last_failed = feedback winner) ──
+    # run_5 proper — trains on the FULL 1200. Best-model candidate AND curriculum
+    # base (phase 1). Writes a manifest of its trained problem_ids so phase 2 can
+    # do a true unseen/seen split.
+    {
+        **_BUILD_COMMON,
+        "name": "run_5_proper_phase1",
+        "tags": ["run_5", "last_failed", "phase_1_base"],
+        "feedback_type": "last_failed",
+        "use_edge_cases": False,
+        "train_cap": 1200,
+        "curriculum_mode": "full",
+        "write_manifest": True,
+        "manifest_path": "./data/run5_trained_ids.json",
+    },
+    # run_6 — edge cases (TDD) + turn-0 ground-truth anchor, on the winner.
+    {
+        **_BUILD_COMMON,
+        "name": "run_6_edge_cases",
+        "tags": ["run_6", "last_failed", "edge_cases", "tdd"],
+        "feedback_type": "last_failed",
+        "use_edge_cases": True,
+        "train_cap": 1500,
+        "curriculum_mode": "full",
+    },
+    # curriculum PHASE 2 — resume run_5 checkpoint. Dataset = ALL unseen hard
+    # (556) + 15% stratified seen-replay (~83) ≈ 639, ~87% hard / ~87% fresh.
+    # 2 epochs to recover step count on the smaller set; KL early-stop guards the
+    # 2nd-epoch overfitting/reward-hacking risk. Edge cases ON.
+    {
+        **_BUILD_COMMON,
+        "name": "run_7_curriculum_phase2",
+        "tags": ["run_7", "curriculum", "phase_2_hard_specialize"],
+        "feedback_type": "last_failed",
+        "use_edge_cases": True,
+        "train_cap": 2000,  # high cap; hard_specialize sizing overrides it
+        "num_epochs": 2,
+        "curriculum_mode": "hard_specialize",
+        "replay_frac": 0.15,
+        "manifest_path": "./data/run5_trained_ids.json",
+        "base_model_override": "./checkpoints/run_5_proper_phase1_final",
     },
 ]
 
@@ -201,12 +271,28 @@ def update_yaml_config(run_config: dict):
             "use_feedback_bonus": run_config["use_feedback_bonus"],
             "use_edge_cases": run_config["use_edge_cases"],
             "feedback_type": run_config["feedback_type"],
+            "curriculum_mode": run_config.get("curriculum_mode", "full"),
+            "write_manifest": run_config.get("write_manifest", False),
+            "manifest_path": run_config.get(
+                "manifest_path", "./data/run5_trained_ids.json"
+            ),
+            "replay_frac": run_config.get("replay_frac", 0.15),
         },
         "evaluation": {
             "dataset_path": "./data/apps_eval.jsonl",
             # Eval loads the checkpoint from the LAST trained epoch. Always derived
             # from resolved_epochs so it can never point at a non-existent epoch.
-            "lora_path": f"./checkpoints/epoch_{resolved_epochs}",
+            # eval_only: point at the already-archived checkpoint instead.
+            "lora_path": (
+                run_config.get(
+                    "eval_checkpoint", f"./checkpoints/{run_config['name']}_final"
+                )
+                if run_config.get("eval_only")
+                # Training runs: eval reads the stable _final dir, which the loop
+                # populates from the best-existing epoch AFTER training and BEFORE
+                # eval. Robust to 2-epoch runs and KL early-stops.
+                else f"./checkpoints/{run_config['name']}_final"
+            ),
             "output_filename": f"apps_eval_{run_config['name']}.json",
         },
     }
@@ -234,6 +320,22 @@ def main():
 
         update_yaml_config(run)
 
+        # Eval-only: re-evaluate an EXISTING checkpoint under the (now corrected)
+        # per-arm eval prompt. No data-prep-train, no archival. Used to get a clean
+        # feedback comparison on checkpoints 3/4/5 that were already trained.
+        if run.get("eval_only"):
+            # Still refresh eval data so the arm-agnostic v2 eval file exists.
+            run_command(
+                "PYTHONPATH=src python3 src/rlef/prepare_openrlhf_data.py",
+                "Eval Data Refresh (eval_only)",
+            )
+            run_command("ray stop --force", "vLLM Memory Flush")
+            run_command(
+                "PYTHONPATH=src python3 src/rlef/evaluate.py",
+                f"Re-Eval Existing Checkpoint ({run['name']})",
+            )
+            continue
+
         run_command(
             "PYTHONPATH=src python3 src/rlef/prepare_openrlhf_data.py",
             "Data Preparation",
@@ -245,17 +347,24 @@ def main():
             "PYTHONPATH=src python3 src/rlef/train_agent.py", "RLHF Training Loop"
         )
 
-        run_command(
-            "PYTHONPATH=src python3 src/rlef/evaluate.py", "Checkpoint Evaluation"
-        )
-
-        # Safely archive the final epoch checkpoint so the next run doesn't overwrite it.
-        # Default 1 matches update_yaml_config's resolved_epochs default.
+        # Archive the best-existing epoch to a stable _final dir BEFORE eval.
+        # For 2-epoch runs we prefer the highest epoch that actually exists; if
+        # epoch 2 never completed (crash) or early-stopped, fall back to the
+        # highest epoch present. This also makes eval's lora_path (_final) stable.
         target_epoch = run.get("num_epochs", 1)
         run_dir_name = f"./checkpoints/{run['name']}_final"
+        archive_cmd = (
+            f"rm -rf {run_dir_name}; "
+            f"for e in $(seq {target_epoch} -1 1); do "
+            f"  if [ -d ./checkpoints/epoch_$e ]; then "
+            f"    mv ./checkpoints/epoch_$e {run_dir_name}; "
+            f"    echo archived epoch_$e '->' {run_dir_name}; break; "
+            f"  fi; done"
+        )
+        run_command(archive_cmd, "Checkpoint Archival (best-existing epoch)")
+
         run_command(
-            f"mv ./checkpoints/epoch_{target_epoch} {run_dir_name}",
-            "Checkpoint Archival",
+            "PYTHONPATH=src python3 src/rlef/evaluate.py", "Checkpoint Evaluation"
         )
 
     print("\n🎉 ALL SCHEDULED RUNS COMPLETED SUCCESSFULLY.")
