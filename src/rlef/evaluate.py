@@ -177,14 +177,16 @@ async def main(baseline: bool = False):
         enable_prefix_caching=True,
         enable_lora=True,
         max_lora_rank=cfg.get("lora_rank", 16),  # MUST match the trained adapter's rank
-        gpu_memory_utilization=0.60,
-        max_model_len=8192,
+        gpu_memory_utilization=cfg.get("eval_gpu_memory_utilization", 0.60),
+        max_model_len=cfg.get(
+            "max_model_len", 16384
+        ),  # MUST match train, or long multi-turn prompts truncate
     )
     vllm_engine = AsyncLLMEngine.from_engine_args(engine_args)
 
     sampling_params = SamplingParams(
         temperature=0.0,  # greedy -> deterministic pass@1
-        max_tokens=1200,
+        max_tokens=cfg.get("max_tokens", 1200),
         stop=cfg.get("stop_tokens", ["</code>"]),
         include_stop_str_in_output=True,
     )

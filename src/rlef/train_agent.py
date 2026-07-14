@@ -71,8 +71,10 @@ engine_args = AsyncEngineArgs(
     max_lora_rank=cfg.get(
         "lora_rank", 16
     ),  # MUST match LoraConfig rank or vLLM rejects the adapter
-    gpu_memory_utilization=0.30,
-    max_model_len=16384,
+    gpu_memory_utilization=cfg.get(
+        "gpu_memory_utilization", 0.42
+    ),  # 0.42 gives KV room for 16384 window
+    max_model_len=cfg.get("max_model_len", 16384),
 )
 vllm_engine = AsyncLLMEngine.from_engine_args(engine_args)
 
@@ -503,7 +505,7 @@ async def main():
             )
             sampling_params = SamplingParams(
                 temperature=current_temp,
-                max_tokens=1200,
+                max_tokens=cfg.get("max_tokens", 1200),
                 stop=cfg.get("stop_tokens", ["</code>"]),
                 include_stop_str_in_output=True,
                 logprobs=1,  # request behavior logprobs for the importance ratio

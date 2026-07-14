@@ -8,9 +8,67 @@ import yaml
 import sys
 import os
 
-# ─── 1. FULL 7-RUN ABLATION SEQUENCE ─────────────────────────────────────────
+# ─── 1. STAGE-1 FEEDBACK SCREEN ──────────────────────────────────────────────
+# Cheap diagnostic to resolve the feedback_type categorical (standard vs
+# consolidated vs last_failed). Everything held fixed EXCEPT feedback_type:
+#   - linear pass-rate reward ON (dense info is the settled win)
+#   - multi-turn ON at 3 turns (reduced from 5 for the screen)
+#   - all shaping bonuses ON, use_edge_cases OFF (that's Stage 2)
+#   - train_cap 300 (stratified ~190/78/32), 1 epoch, 10x10 = 100 concurrent
+#   - max_tokens 1200 SAME across all three arms (do NOT vary — would confound)
+#   - full 702 eval (keep competition visibility)
+# Winner's feedback_type carries into Stage 2 (example-injection, edge-cases)
+# and the final best model.
+
+_SCREEN_COMMON = {
+    "max_turns": 3,
+    "use_linear_pass_rate": True,
+    "use_step_credit": True,
+    "use_turn_penalty": True,
+    "use_feedback_bonus": True,
+    "use_edge_cases": False,
+    "train_cap": 300,
+    "num_epochs": 1,
+    "batch_size": 10,
+    "num_generations": 10,
+    "learning_rate": 2.0e-5,
+    "lora_rank": 32,
+    "lora_alpha": 64,
+    "kl_beta": 0.1,
+    "max_kl_stop": 0.5,
+    "max_model_len": 16384,
+    "max_tokens": 1200,
+    "gpu_memory_utilization": 0.42,
+    "start_temp": 0.7,
+    "end_temp": 0.7,
+}
 
 RUNS = [
+    {
+        **_SCREEN_COMMON,
+        "name": "screen_standard",
+        "tags": ["screen", "feedback_standard"],
+        "feedback_type": "standard",
+    },
+    {
+        **_SCREEN_COMMON,
+        "name": "screen_consolidated",
+        "tags": ["screen", "feedback_consolidated"],
+        "feedback_type": "consolidated",
+    },
+    {
+        **_SCREEN_COMMON,
+        "name": "screen_last_failed",
+        "tags": ["screen", "feedback_last_failed"],
+        "feedback_type": "last_failed",
+    },
+]
+
+# ─── ARCHIVED: full ablation suite (Stage 2 + curriculum, restore when needed) ─
+# Stage 2 (run on Stage-1 winner W): W+example_injection, W+example+edge_cases.
+# Curriculum: high-variance bet on COMPETITION bucket, built on best config,
+# judged on competition pass@1 — run as its own experiment, not in this screen.
+ARCHIVE_RUNS = [
     {
         "name": "run_1_sparse_baseline",
         "tags": ["run_1", "sparse_baseline", "zero_shot"],
@@ -34,42 +92,9 @@ RUNS = [
         "feedback_type": "none",
     },
     {
-        "name": "run_3_multi_turn_baseline",
-        "tags": ["run_3", "multi_turn_baseline", "standard_feedback"],
-        "max_turns": 5,
-        "use_linear_pass_rate": True,
-        "use_step_credit": True,
-        "use_turn_penalty": True,
-        "use_feedback_bonus": True,
-        "use_edge_cases": False,
-        "feedback_type": "standard",
-    },
-    {
-        "name": "run_4_macro_heuristic",
-        "tags": ["run_4", "macro_heuristic", "consolidated_feedback"],
-        "max_turns": 5,
-        "use_linear_pass_rate": True,
-        "use_step_credit": True,
-        "use_turn_penalty": True,
-        "use_feedback_bonus": True,
-        "use_edge_cases": False,
-        "feedback_type": "consolidated",
-    },
-    {
-        "name": "run_5_multi_turn_targeted",
-        "tags": ["run_5", "multi_turn", "targeted_feedback"],
-        "max_turns": 5,
-        "use_linear_pass_rate": True,
-        "use_step_credit": True,
-        "use_turn_penalty": True,
-        "use_feedback_bonus": True,
-        "use_edge_cases": False,
-        "feedback_type": "last_failed",
-    },
-    {
         "name": "run_6_anchored_tdd",
         "tags": ["run_6", "anchored_tdd", "test_driven"],
-        "max_turns": 5,
+        "max_turns": 3,
         "use_linear_pass_rate": True,
         "use_step_credit": True,
         "use_turn_penalty": True,
@@ -80,7 +105,7 @@ RUNS = [
     {
         "name": "run_7_curriculum_phase_1",
         "tags": ["run_7", "curriculum", "phase_1_execution"],
-        "max_turns": 5,
+        "max_turns": 3,
         "use_linear_pass_rate": True,
         "use_step_credit": True,
         "use_turn_penalty": True,
@@ -93,7 +118,7 @@ RUNS = [
     {
         "name": "run_7_curriculum_phase_2",
         "tags": ["run_7", "curriculum", "phase_2_tdd"],
-        "max_turns": 5,
+        "max_turns": 3,
         "use_linear_pass_rate": True,
         "use_step_credit": True,
         "use_turn_penalty": True,
@@ -125,6 +150,7 @@ def update_yaml_config(run_config: dict):
         "custom_data_path", f"./data/apps_{run_config['name']}.jsonl"
     )
 
+    resolved_epochs = run_config.get("num_epochs", 1)
     yaml_structure = {
         "wandb_project": run_config.get("wandb_project", "rlef-code2"),
         "wandb_entity": "tarunbeerelli-northeastern-university",
@@ -132,23 +158,39 @@ def update_yaml_config(run_config: dict):
             "name"
         ],  # descriptive W&B run name (e.g. run_1_sparse_baseline)
         "tags": run_config["tags"],
-        "num_epochs": run_config.get("num_epochs", 1),
+        "num_epochs": resolved_epochs,
         "start_temp": run_config.get("start_temp", 0.7),
         "end_temp": run_config.get("end_temp", 0.7),  # fixed temp: no across-run anneal
         "batch_size": run_config.get(
-            "batch_size", 8
+            "batch_size", 10
         ),  # bs x num_generations = concurrent load
         "num_generations": run_config.get(
-            "num_generations", 8
+            "num_generations", 12
         ),  # rollouts per problem for GRPO groups
-        "learning_rate": run_config.get("learning_rate", 1.0e-4),
+        "learning_rate": run_config.get(
+            "learning_rate", 2.0e-5
+        ),  # stable LR (1e-4 diverged)
         "lora_rank": run_config.get("lora_rank", 32),
         "lora_alpha": run_config.get("lora_alpha", 64),
         "train_cap": run_config.get(
             "train_cap", 1200
         ),  # stratified total training problems
         "stratify_mode": run_config.get("stratify_mode", "proportional"),
-        "kl_beta": run_config.get("kl_beta", 0.04),
+        "kl_beta": run_config.get("kl_beta", 0.1),  # tighter KL leash
+        "max_kl_stop": run_config.get(
+            "max_kl_stop", 0.5
+        ),  # hard early-stop on divergence
+        # --- length + memory (config-driven; screen uses 16384 window @ util 0.42) ---
+        "max_model_len": run_config.get(
+            "max_model_len", 16384
+        ),  # full multi-turn KV window
+        "max_tokens": run_config.get(
+            "max_tokens", 1200
+        ),  # per-completion cap; SAME across screen arms
+        "gpu_memory_utilization": run_config.get("gpu_memory_utilization", 0.42),
+        "eval_gpu_memory_utilization": run_config.get(
+            "eval_gpu_memory_utilization", 0.60
+        ),
         "stop_tokens": ["</code>"],
         "ablation": {
             "dataset_path": dataset_target,
@@ -162,15 +204,12 @@ def update_yaml_config(run_config: dict):
         },
         "evaluation": {
             "dataset_path": "./data/apps_eval.jsonl",
-            "lora_path": "./checkpoints/epoch_3",
+            # Eval loads the checkpoint from the LAST trained epoch. Always derived
+            # from resolved_epochs so it can never point at a non-existent epoch.
+            "lora_path": f"./checkpoints/epoch_{resolved_epochs}",
+            "output_filename": f"apps_eval_{run_config['name']}.json",
         },
     }
-
-    # Curriculum eval phase relies on the proper epoch checkpoint
-    if "num_epochs" in run_config:
-        yaml_structure["evaluation"]["lora_path"] = (
-            f"./checkpoints/epoch_{run_config['num_epochs']}"
-        )
 
     if "base_model_override" in run_config:
         yaml_structure["lora_resume_path"] = run_config["base_model_override"]
@@ -210,8 +249,9 @@ def main():
             "PYTHONPATH=src python3 src/rlef/evaluate.py", "Checkpoint Evaluation"
         )
 
-        # Safely archive the final epoch checkpoint so the next run doesn't overwrite it
-        target_epoch = run.get("num_epochs", 3)
+        # Safely archive the final epoch checkpoint so the next run doesn't overwrite it.
+        # Default 1 matches update_yaml_config's resolved_epochs default.
+        target_epoch = run.get("num_epochs", 1)
         run_dir_name = f"./checkpoints/{run['name']}_final"
         run_command(
             f"mv ./checkpoints/epoch_{target_epoch} {run_dir_name}",
