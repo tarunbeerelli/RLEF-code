@@ -51,8 +51,12 @@ def main():
     # ─── STRATIFIED CAP ACROSS DIFFICULTY ──────────────────────────────────
     # Cap total training problems while preserving the difficulty distribution.
     # `train_cap` and `stratify_mode` come from train.yaml so run_pipeline controls them.
-    train_cap = cfg.get("train_cap", ablation_cfg.get("train_cap", 1200))
+    train_cap = cfg.get("train_cap", ablation_cfg.get("train_cap", 1000))
     stratify_mode = cfg.get("stratify_mode", "proportional")  # or "balanced"
+    curriculum_mode = ablation_cfg.get("curriculum_mode", "full")
+    manifest_path = Path(
+        ablation_cfg.get("manifest_path", "./data/run5_trained_ids.json")
+    )
 
     from collections import defaultdict
 
@@ -67,7 +71,60 @@ def main():
         f"Available verified train problems by difficulty: {available} (total {total_available})"
     )
 
-    if train_cap >= total_available:
+    # ── CURRICULUM: hard_specialize ─────────────────────────────────────────
+    # Phase-2 dataset = ALL unseen hard (interview+competition not in the base
+    # run's manifest) + a stratified replay sampled from the SEEN set (mirrors
+    # the base run's difficulty mix, for anti-forgetting). Requires the base run
+    # to have written a manifest of the problem_ids it trained on.
+    if curriculum_mode == "hard_specialize":
+        if not manifest_path.exists():
+            raise FileNotFoundError(
+                f"curriculum_mode=hard_specialize needs a manifest at {manifest_path}, "
+                f"written by the base (phase-1) run. Run phase 1 first."
+            )
+        seen_ids = set(json.loads(manifest_path.read_text()))
+        print(f"Loaded manifest: {len(seen_ids)} seen problem_ids from base run.")
+
+        hard = [p for p in problems if p.difficulty in ("interview", "competition")]
+        unseen_hard = [p for p in hard if p.problem_id not in seen_ids]
+        seen_all = [p for p in problems if p.problem_id in seen_ids]
+
+        replay_frac = float(ablation_cfg.get("replay_frac", 0.15))
+        # replay count is a fraction of the UNSEEN-HARD CORE (so the sprinkle scales
+        # with the fresh data, keeping ~87% hard / ~87% fresh as sized).
+        replay_n = int(round(len(unseen_hard) * replay_frac))
+        # stratified replay: mirror the seen set's difficulty mix
+        seen_by_diff = defaultdict(list)
+        for p in seen_all:
+            seen_by_diff[p.difficulty].append(p)
+        seen_total = max(1, len(seen_all))
+        replay = []
+        for d in diff_order:
+            pool = seen_by_diff.get(d, [])
+            random.shuffle(pool)
+            share = int(round(replay_n * (len(pool) / seen_total)))
+            replay.extend(pool[:share])
+
+        selected = unseen_hard + replay
+        random.shuffle(selected)
+        problems = selected
+        n_hard = sum(
+            1 for p in problems if p.difficulty in ("interview", "competition")
+        )
+        print(
+            f"Curriculum hard_specialize: {len(unseen_hard)} unseen-hard "
+            f"+ {len(replay)} stratified seen-replay = {len(problems)} "
+            f"({n_hard/max(1,len(problems))*100:.0f}% hard, "
+            f"{len(unseen_hard)/max(1,len(problems))*100:.0f}% fresh)."
+        )
+        # Skip normal stratified sampling below.
+        _skip_stratify = True
+    else:
+        _skip_stratify = False
+
+    if _skip_stratify:
+        pass
+    elif train_cap >= total_available:
         # Use everything, but still report the distribution.
         selected = []
         for d in diff_order:
@@ -99,28 +156,22 @@ def main():
                 f"({available[d]/total_available:.1%} of cap {train_cap})"
             )
 
-    random.shuffle(selected)  # mix difficulties so batches are heterogeneous
-    problems = selected
-    print(
-        f"Stratified training set locked: {len(problems)} problems "
-        f"(mode={stratify_mode}, cap={train_cap})"
-    )
-
-    # Automatically slice the dataset based on the target filename (curriculum).
-    # NOTE: phase slicing now operates on the already-stratified set, so each
-    # curriculum half retains a difficulty mix rather than being ordered by it.
-    if "phase1" in output_path_str:
-        problems = problems[: len(problems) // 2]
-        print(f"Curriculum Phase 1 Detected: Subsetting first {len(problems)} rows.")
-    elif "phase2" in output_path_str:
-        mid = len(problems) // 2
-        split_b = problems[mid:]
-        replay = random.sample(problems[:mid], max(1, int(mid * 0.10)))
-        problems = split_b + replay
-        random.shuffle(problems)
+    if not _skip_stratify:
+        random.shuffle(selected)  # mix difficulties so batches are heterogeneous
+        problems = selected
         print(
-            f"Curriculum Phase 2 Detected: Subsetting second half + 10% replay ({len(problems)} rows)."
+            f"Stratified training set locked: {len(problems)} problems "
+            f"(mode={stratify_mode}, cap={train_cap})"
         )
+
+    # Write a manifest of the problem_ids this run trains on, so a later
+    # curriculum phase can exclude them (true unseen-vs-seen split). Only the
+    # base/phase-1 run needs this; controlled by write_manifest in config.
+    if ablation_cfg.get("write_manifest"):
+        ids = [p.problem_id for p in problems]
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(json.dumps(ids))
+        print(f"📝 Wrote manifest of {len(ids)} trained problem_ids to {manifest_path}")
 
     print("Initializing Qwen Tokenizer for chat template formatting...")
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Coder-7B-Instruct")
@@ -167,10 +218,33 @@ def main():
     else:
         print("Notice: Standard execution prompts generated (No edge case injection).")
 
-    # --- 2. GENERATE STATIC EVAL DATA (IF MISSING) ---
+    # --- 2. GENERATE STATIC EVAL DATA (IF MISSING OR STALE) ---
+    # The eval file is now ARM-AGNOSTIC: it stores the raw problem (incl. `question`)
+    # and evaluate.py rebuilds the full prompt per-arm at eval time using that arm's
+    # max_turns AND feedback_type. This means one eval file serves every arm
+    # correctly, and there is no max_turns/feedback_type to go stale.
+    # We still version the schema so an OLD eval file (which baked in a one-shot
+    # prompt and lacks `question`) is detected and regenerated.
+    EVAL_SCHEMA_VERSION = 2  # v2 = arm-agnostic (stores raw question)
+    eval_meta_file = eval_file.with_suffix(".meta")
+    stale = False
+    if eval_file.exists():
+        ok = False
+        if eval_meta_file.exists():
+            try:
+                ok = int(eval_meta_file.read_text().strip()) == EVAL_SCHEMA_VERSION
+            except Exception:
+                ok = False
+        if not ok:
+            stale = True  # legacy/one-shot file or wrong schema -> rebuild
+
+    if stale:
+        print("\n⚠️ Eval file uses an old schema (pre arm-agnostic); regenerating.")
+        eval_file.unlink(missing_ok=True)
+
     if not eval_file.exists():
         print(
-            f"\nEvaluation dataset missing. Generating static eval split at {eval_file}..."
+            f"\nGenerating arm-agnostic eval split at {eval_file} (schema v{EVAL_SCHEMA_VERSION})..."
         )
         try:
             eval_problems = load_apps_split("data/raw/APPS", split="test")
@@ -194,22 +268,26 @@ def main():
 
             with open(eval_file, "w", encoding="utf-8") as f:
                 for p in eval_problems:
-                    # Baseline zero-shot prompt for evaluation consistency
-                    eval_messages = format_prompt(p, {"max_turns": 1})
-                    eval_prompt = tokenizer.apply_chat_template(
-                        eval_messages, tokenize=False, add_generation_prompt=True
+                    # Arm-agnostic: store the raw question so evaluate.py can build
+                    # the correct system prompt per-arm (right max_turns + feedback_type).
+                    # `prompt` retained as a one-shot fallback if question is missing.
+                    fallback_messages = format_prompt(p, {"max_turns": 1})
+                    fallback_prompt = tokenizer.apply_chat_template(
+                        fallback_messages, tokenize=False, add_generation_prompt=True
                     )
                     row = {
                         "problem_id": p.problem_id,
                         "difficulty": p.difficulty,
-                        "prompt": eval_prompt,
+                        "question": p.question,  # raw text -> per-arm rebuild at eval
+                        "prompt": fallback_prompt,  # fallback only
                         "inputs": p.inputs,
                         "outputs": p.outputs,
                         "fn_name": p.fn_name,
                     }
                     f.write(json.dumps(row) + "\n")
+            eval_meta_file.write_text(str(EVAL_SCHEMA_VERSION))
             print(
-                f"Successfully generated {len(eval_problems)} evaluation prompts to {eval_file}"
+                f"Successfully generated {len(eval_problems)} arm-agnostic eval problems to {eval_file}"
             )
         except Exception as e:
             print(
