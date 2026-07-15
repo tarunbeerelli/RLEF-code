@@ -8,6 +8,11 @@ import yaml
 import sys
 import os
 
+# Propagate the CUDA fragmentation setting to all training/eval subprocesses this
+# orchestrator spawns. run_pipeline never imports torch itself, so this can sit
+# after imports (no E402); children read it from the inherited environment.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 # ─── 1. RUN SEQUENCE ─────────────────────────────────────────────────────────
 # Part A: RE-EVAL the three screen checkpoints (3/4/5) under the CORRECTED
 #         per-arm eval prompt (right max_turns AND right feedback_type, plus
@@ -36,7 +41,7 @@ _BUILD_COMMON = {
     "max_kl_stop": 0.5,
     "max_model_len": 16384,
     "max_tokens": 1200,
-    "gpu_memory_utilization": 0.48,  # 120 concurrent @ 16384 peak needs ~63GB vLLM; 0.48=68GB budget
+    "gpu_memory_utilization": 0.38,  # vLLM gets ~53GB; leaves ~87GB for training-side backward at 16384. (0.48 starved training -> OOM)
     "start_temp": 0.7,
     "end_temp": 0.7,
 }

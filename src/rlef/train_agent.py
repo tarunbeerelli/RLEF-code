@@ -45,16 +45,22 @@ import os
 import shutil
 from collections import Counter, defaultdict
 
-import torch
-import torch.nn.functional as F
-import wandb
-import yaml
-from peft import LoraConfig, get_peft_model
-from rlef.reward import execution_reward, verify_generated_tests
-from rlef.prompt import parse_output
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from vllm import AsyncEngineArgs, AsyncLLMEngine, SamplingParams
-from vllm.lora.request import LoRARequest
+# Reduce CUDA fragmentation on the training side. The OOM traceback showed
+# reserved-but-unallocated memory, i.e. fragmentation — this lets the allocator
+# grow segments instead of failing on a fragmented pool. Must be set before torch
+# is imported, so these imports intentionally follow it (E402 suppressed).
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+import torch  # noqa: E402
+import torch.nn.functional as F  # noqa: E402
+import wandb  # noqa: E402
+import yaml  # noqa: E402
+from peft import LoraConfig, get_peft_model  # noqa: E402
+from rlef.reward import execution_reward, verify_generated_tests  # noqa: E402
+from rlef.prompt import parse_output  # noqa: E402
+from transformers import AutoModelForCausalLM, AutoTokenizer  # noqa: E402
+from vllm import AsyncEngineArgs, AsyncLLMEngine, SamplingParams  # noqa: E402
+from vllm.lora.request import LoRARequest  # noqa: E402
 
 # ─── 1. INFRASTRUCTURE & MEMORY PARTITIONING ──────────────────────────────
 
@@ -375,6 +381,7 @@ def grpo_update_step(batch_trajectories, beta=0.04, clip_eps=0.2):
     total_loss = 0.0
     total_kl = 0.0
     n = 0
+    oom_skipped = False
 
     for traj in batch_trajectories:
         adv = adv_map[id(traj)]
@@ -387,56 +394,82 @@ def grpo_update_step(batch_trajectories, beta=0.04, clip_eps=0.2):
         full_ids = full_ids.unsqueeze(0).to(policy_model.device)
         comp_mask = comp_mask.to(policy_model.device)
 
-        # Policy logprobs of taken tokens (completion only)
-        policy_logits = policy_model(full_ids).logits
-        policy_tok_lp = _gather_token_logprobs(policy_logits, full_ids)  # [seq-1]
+        # Pre-bind so the OOM handler can unconditionally drop them (a name left
+        # None just frees nothing). Avoids NameError gymnastics on partial failure.
+        policy_logits = ref_logits = policy_tok_lp = ref_tok_lp = None
+        policy_lp = ref_lp = ratio = clipped = pg = kl = loss = None
 
-        # Frozen reference = base model (adapter disabled), taken tokens
-        with policy_model.disable_adapter():
-            with torch.no_grad():
-                ref_logits = policy_model(full_ids).logits
-                ref_tok_lp = _gather_token_logprobs(ref_logits, full_ids)
+        try:
+            # Policy logprobs of taken tokens (completion only)
+            policy_logits = policy_model(full_ids).logits
+            policy_tok_lp = _gather_token_logprobs(policy_logits, full_ids)  # [seq-1]
 
-        # Align completion mask to the shifted [seq-1] logprob vector
-        m = comp_mask[1:]  # target positions correspond to tokens 1..seq-1
-        policy_lp = policy_tok_lp[m]
-        ref_lp = ref_tok_lp[m]
+            # Frozen reference = base model (adapter disabled), taken tokens
+            with policy_model.disable_adapter():
+                with torch.no_grad():
+                    ref_logits = policy_model(full_ids).logits
+                    ref_tok_lp = _gather_token_logprobs(ref_logits, full_ids)
 
-        # Importance ratio vs the behavior (sampling) policy.
-        # Prefer vLLM behavior logprobs; if unavailable, treat ratio as 1
-        # (REINFORCE-style) rather than fabricate a denominator.
-        # For simplicity we use the current policy's own detached logprobs as the
-        # behavior baseline when vLLM logprobs are absent, which is a valid
-        # single-step on-policy approximation because we update once per rollout.
-        behavior_lp = policy_lp.detach()
-        ratio = torch.exp(policy_lp - behavior_lp)  # ~1 at step 0, enables clipping
-        clipped = torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps)
+            # Align completion mask to the shifted [seq-1] logprob vector
+            m = comp_mask[1:]  # target positions correspond to tokens 1..seq-1
+            policy_lp = policy_tok_lp[m]
+            ref_lp = ref_tok_lp[m]
 
-        # Per-token PG loss, then length-normalized mean over completion tokens
-        pg = -torch.min(ratio * adv, clipped * adv)
+            # Importance ratio vs the behavior (sampling) policy.
+            behavior_lp = policy_lp.detach()
+            ratio = torch.exp(policy_lp - behavior_lp)  # ~1 at step 0, enables clipping
+            clipped = torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps)
 
-        # KL(policy || ref) estimator on completion tokens (k3, unbiased, >=0)
-        log_diff = ref_lp - policy_lp
-        kl = torch.exp(log_diff) - log_diff - 1.0
+            # Per-token PG loss, then length-normalized mean over completion tokens
+            pg = -torch.min(ratio * adv, clipped * adv)
 
-        loss = (pg + beta * kl).mean()
-        loss.backward()
+            # KL(policy || ref) estimator on completion tokens (k3, unbiased, >=0)
+            log_diff = ref_lp - policy_lp
+            kl = torch.exp(log_diff) - log_diff - 1.0
 
-        total_loss += loss.item()
-        total_kl += kl.mean().item()
-        n += 1
+            loss = (pg + beta * kl).mean()
+            loss.backward()
 
-        del policy_logits, ref_logits, policy_tok_lp, ref_tok_lp
-        del policy_lp, ref_lp, ratio, clipped, pg, kl, loss, full_ids, comp_mask
+            total_loss += loss.item()
+            total_kl += kl.mean().item()
+            n += 1
+
+            # Free tensors by dropping references (None, not del) so the names stay
+            # bound for the exception path's cleanup below.
+            policy_logits = ref_logits = policy_tok_lp = ref_tok_lp = None
+            policy_lp = ref_lp = ratio = clipped = pg = kl = loss = None
+        except torch.cuda.OutOfMemoryError:
+            # One pathologically long trajectory shouldn't kill the whole run.
+            # Skip it, clear the cache, and continue with the rest of the batch.
+            seq_len = full_ids.shape[1]
+            print(
+                f"⚠️ OOM on a single trajectory (seq_len={seq_len}); skipping it. "
+                f"Grads from prior trajectories in this batch are preserved."
+            )
+            optimizer.zero_grad(
+                set_to_none=True
+            )  # drop partial grads to stay consistent
+            # All names are pre-bound above, so dropping references here is always
+            # safe; empty_cache() then lets the allocator reclaim the freed memory.
+            policy_logits = ref_logits = policy_tok_lp = ref_tok_lp = None
+            policy_lp = ref_lp = ratio = clipped = pg = kl = loss = None
+            torch.cuda.empty_cache()
+            n = 0  # this batch is compromised; signal caller to skip the step
+            oom_skipped = True
+            break
+        finally:
+            full_ids = comp_mask = None
 
     if n == 0:
-        return 0.0, 0.0
+        # Distinguish OOM-skip from a legitimately empty (all-zero-advantage) batch,
+        # so the caller can log them separately instead of both looking like "0.0".
+        return 0.0, 0.0, ("oom_skip" if oom_skipped else "empty")
 
     torch.nn.utils.clip_grad_norm_(policy_model.parameters(), max_norm=1.0)
     optimizer.step()
     policy_model.save_pretrained("./checkpoint/active_lora")
 
-    return total_loss / n, total_kl / n
+    return total_loss / n, total_kl / n, "ok"
 
 
 # ─── 4. THE MASTER EXECUTION LOOP ────────────────────────────────────────
@@ -487,6 +520,8 @@ async def main():
         "max_kl_stop", None
     )  # halt if rolling KL exceeds this (None = disabled)
     stop_training = False
+    oom_skip_count = 0  # optimizer steps skipped due to OOM (no update applied)
+    empty_batch_count = 0  # legit all-zero-advantage batches (no update needed)
     prev_checksum = None
 
     for epoch in range(epochs):
@@ -536,9 +571,19 @@ async def main():
             avg_reward = sum(t["reward"] for t in trajectories) / max(
                 1, len(trajectories)
             )
-            loss, kl_divergence = grpo_update_step(
+            loss, kl_divergence, step_status = grpo_update_step(
                 trajectories, beta=cfg.get("kl_beta", 0.1)
             )
+
+            # Track skipped optimizer steps distinctly. oom_skip = batch dropped due
+            # to OOM (no update applied); empty = legit all-zero-advantage batch.
+            if step_status == "oom_skip":
+                oom_skip_count += 1
+                print(
+                    f"⚠️ Step {global_batch}: batch SKIPPED (OOM). Cumulative OOM skips: {oom_skip_count}"
+                )
+            elif step_status == "empty":
+                empty_batch_count += 1
 
             total_execute = sum(t["stats"]["execute"] for t in trajectories)
             total_tests = sum(t["stats"]["generate_tests"] for t in trajectories)
@@ -555,12 +600,16 @@ async def main():
             )
 
             # --- Rolling trend + adapter-swap diagnostic ---
-            reward_window.append(avg_reward)
-            success_window.append(success_rate)
-            kl_window.append(kl_divergence)
-            rolling_reward = sum(reward_window) / len(reward_window)
-            rolling_success = sum(success_window) / len(success_window)
-            rolling_kl = sum(kl_window) / len(kl_window)
+            # Only feed REAL steps into rolling windows. An OOM-skipped batch
+            # returns 0.0 for loss/kl; appending that would pollute rolling_kl
+            # (falsely suppressing the KL early-stop) and rolling_success.
+            if step_status == "ok":
+                reward_window.append(avg_reward)
+                success_window.append(success_rate)
+                kl_window.append(kl_divergence)
+            rolling_reward = sum(reward_window) / max(1, len(reward_window))
+            rolling_success = sum(success_window) / max(1, len(success_window))
+            rolling_kl = sum(kl_window) / max(1, len(kl_window))
 
             checksum = _lora_checksum()
             checksum_delta = (
@@ -576,6 +625,9 @@ async def main():
                 "train/loss": loss,
                 "train/kl_divergence": kl_divergence,
                 "train/rolling_kl": rolling_kl,
+                "train/step_skipped_oom": 1 if step_status == "oom_skip" else 0,
+                "train/cumulative_oom_skips": oom_skip_count,
+                "train/cumulative_empty_batches": empty_batch_count,
                 "train/avg_reward": avg_reward,
                 "train/rolling_reward": rolling_reward,
                 "train/learning_rate": optimizer.param_groups[0]["lr"],
