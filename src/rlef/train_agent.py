@@ -351,7 +351,7 @@ def _gather_token_logprobs(logits, input_ids):
 
 def grpo_update_step(batch_trajectories, beta=0.04, clip_eps=0.2):
     if not batch_trajectories:
-        return 0.0, 0.0
+        return 0.0, 0.0, "empty", 0
 
     policy_model.train()
 
@@ -381,7 +381,7 @@ def grpo_update_step(batch_trajectories, beta=0.04, clip_eps=0.2):
     total_loss = 0.0
     total_kl = 0.0
     n = 0
-    oom_skipped = False
+    traj_oom_count = 0  # trajectories skipped due to OOM within THIS batch
 
     for traj in batch_trajectories:
         adv = adv_map[id(traj)]
@@ -439,37 +439,42 @@ def grpo_update_step(batch_trajectories, beta=0.04, clip_eps=0.2):
             policy_logits = ref_logits = policy_tok_lp = ref_tok_lp = None
             policy_lp = ref_lp = ratio = clipped = pg = kl = loss = None
         except torch.cuda.OutOfMemoryError:
-            # One pathologically long trajectory shouldn't kill the whole run.
-            # Skip it, clear the cache, and continue with the rest of the batch.
+            # One pathologically long trajectory shouldn't kill the run OR waste the
+            # gradients already accumulated from earlier trajectories in this batch.
+            # Drop ONLY this trajectory's tensors, reclaim memory, and CONTINUE — the
+            # already-backward'd grads from prior trajectories stay intact and will
+            # be applied by optimizer.step() as long as n > 0.
             seq_len = full_ids.shape[1]
+            traj_oom_count += 1
             print(
-                f"⚠️ OOM on a single trajectory (seq_len={seq_len}); skipping it. "
-                f"Grads from prior trajectories in this batch are preserved."
+                f"⚠️ OOM on a single trajectory (seq_len={seq_len}); skipping just "
+                f"this trajectory. {n} good grads preserved. "
+                f"Cumulative traj OOM skips this batch: {traj_oom_count}"
             )
-            optimizer.zero_grad(
-                set_to_none=True
-            )  # drop partial grads to stay consistent
-            # All names are pre-bound above, so dropping references here is always
-            # safe; empty_cache() then lets the allocator reclaim the freed memory.
+            # Drop references (names pre-bound, always safe) then reclaim.
             policy_logits = ref_logits = policy_tok_lp = ref_tok_lp = None
             policy_lp = ref_lp = ratio = clipped = pg = kl = loss = None
             torch.cuda.empty_cache()
-            n = 0  # this batch is compromised; signal caller to skip the step
-            oom_skipped = True
-            break
+            # NOTE: do NOT zero_grad — that would discard the good accumulated grads.
+            # NOTE: do NOT break — continue to the next trajectory.
+            continue
         finally:
             full_ids = comp_mask = None
 
     if n == 0:
-        # Distinguish OOM-skip from a legitimately empty (all-zero-advantage) batch,
-        # so the caller can log them separately instead of both looking like "0.0".
-        return 0.0, 0.0, ("oom_skip" if oom_skipped else "empty")
+        # Every trajectory was skipped. If any OOM'd, this is an OOM-driven skip;
+        # otherwise it's a legitimately empty (all-zero-advantage) batch.
+        status = "oom_skip" if traj_oom_count > 0 else "empty"
+        return 0.0, 0.0, status, traj_oom_count
 
     torch.nn.utils.clip_grad_norm_(policy_model.parameters(), max_norm=1.0)
     optimizer.step()
     policy_model.save_pretrained("./checkpoint/active_lora")
 
-    return total_loss / n, total_kl / n, "ok"
+    # n > 0: we stepped on the good grads. If some trajectories OOM'd, flag it as
+    # a partial step so the caller can track degraded batches distinctly from clean.
+    status = "partial_oom" if traj_oom_count > 0 else "ok"
+    return total_loss / n, total_kl / n, status, traj_oom_count
 
 
 # ─── 4. THE MASTER EXECUTION LOOP ────────────────────────────────────────
@@ -522,6 +527,8 @@ async def main():
     stop_training = False
     oom_skip_count = 0  # optimizer steps skipped due to OOM (no update applied)
     empty_batch_count = 0  # legit all-zero-advantage batches (no update needed)
+    partial_oom_count = 0  # steps that DID apply but dropped >=1 OOM trajectory
+    traj_oom_total = 0  # cumulative individual trajectories dropped to OOM
     prev_checksum = None
 
     for epoch in range(epochs):
@@ -571,19 +578,37 @@ async def main():
             avg_reward = sum(t["reward"] for t in trajectories) / max(
                 1, len(trajectories)
             )
-            loss, kl_divergence, step_status = grpo_update_step(
+            loss, kl_divergence, step_status, batch_traj_ooms = grpo_update_step(
                 trajectories, beta=cfg.get("kl_beta", 0.1)
             )
 
-            # Track skipped optimizer steps distinctly. oom_skip = batch dropped due
-            # to OOM (no update applied); empty = legit all-zero-advantage batch.
+            # Step statuses:
+            #   ok          -> clean full step
+            #   partial_oom -> stepped, but some trajectories OOM-skipped (degraded)
+            #   oom_skip    -> whole batch OOM'd, no step applied
+            #   empty       -> legit all-zero-advantage batch, no step needed
+            traj_oom_total += batch_traj_ooms
             if step_status == "oom_skip":
                 oom_skip_count += 1
                 print(
-                    f"⚠️ Step {global_batch}: batch SKIPPED (OOM). Cumulative OOM skips: {oom_skip_count}"
+                    f"⚠️ Step {global_batch}: ENTIRE batch OOM-skipped. "
+                    f"Cumulative full-batch skips: {oom_skip_count}"
                 )
+            elif step_status == "partial_oom":
+                partial_oom_count += 1
             elif step_status == "empty":
                 empty_batch_count += 1
+
+            # RED LINE: a couple of dropped trajectories per batch is fine, but if a
+            # single batch drops many, the memory config is too tight -> lower bs or
+            # concurrency. Surface it loudly so it's actionable mid-run.
+            oom_redline = cfg.get("oom_redline_per_batch", 3)
+            if batch_traj_ooms >= oom_redline:
+                print(
+                    f"🚨 Step {global_batch}: {batch_traj_ooms} trajectories OOM'd in ONE "
+                    f"batch (>= redline {oom_redline}). Memory config too tight — "
+                    f"consider lowering batch_size/num_generations or max_model_len."
+                )
 
             total_execute = sum(t["stats"]["execute"] for t in trajectories)
             total_tests = sum(t["stats"]["generate_tests"] for t in trajectories)
@@ -600,10 +625,10 @@ async def main():
             )
 
             # --- Rolling trend + adapter-swap diagnostic ---
-            # Only feed REAL steps into rolling windows. An OOM-skipped batch
-            # returns 0.0 for loss/kl; appending that would pollute rolling_kl
-            # (falsely suppressing the KL early-stop) and rolling_success.
-            if step_status == "ok":
+            # Feed only steps that APPLIED an update (ok or partial_oom) into rolling
+            # windows. oom_skip/empty applied nothing and return 0.0, which would
+            # pollute rolling_kl (falsely suppressing KL early-stop) and success.
+            if step_status in ("ok", "partial_oom"):
                 reward_window.append(avg_reward)
                 success_window.append(success_rate)
                 kl_window.append(kl_divergence)
@@ -626,7 +651,11 @@ async def main():
                 "train/kl_divergence": kl_divergence,
                 "train/rolling_kl": rolling_kl,
                 "train/step_skipped_oom": 1 if step_status == "oom_skip" else 0,
+                "train/step_partial_oom": 1 if step_status == "partial_oom" else 0,
+                "train/batch_traj_ooms": batch_traj_ooms,
                 "train/cumulative_oom_skips": oom_skip_count,
+                "train/cumulative_partial_oom_steps": partial_oom_count,
+                "train/cumulative_traj_ooms": traj_oom_total,
                 "train/cumulative_empty_batches": empty_batch_count,
                 "train/avg_reward": avg_reward,
                 "train/rolling_reward": rolling_reward,
@@ -662,12 +691,31 @@ async def main():
             )
             global_batch += 1
 
+            # --- PERIODIC "LAST GOOD" CHECKPOINT ---
+            # Snapshot the adapter while KL is still healthy so that if we later
+            # diverge and early-stop, we have a PRE-divergence checkpoint to keep
+            # instead of the damaged current one. "Good" = rolling_kl comfortably
+            # below the stop threshold. Save every `ckpt_every` steps.
+            ckpt_every = cfg.get("checkpoint_every", 40)
+            good_kl_ceiling = (max_kl_stop * 0.5) if max_kl_stop else 0.2
+            if (
+                global_batch % ckpt_every == 0
+                and len(kl_window) == kl_window.maxlen
+                and rolling_kl < good_kl_ceiling
+            ):
+                _good_dir = "./checkpoint/last_good_lora"
+                if os.path.exists("./checkpoint/active_lora"):
+                    shutil.copytree(
+                        "./checkpoint/active_lora", _good_dir, dirs_exist_ok=True
+                    )
+                    print(
+                        f"💾 Saved last-good checkpoint at step {global_batch} (rolling_kl {rolling_kl:.3f})"
+                    )
+
             # --- KL EARLY-STOP ---
             # If the rolling KL blows past the threshold, the policy is diverging
-            # from base (random-walk regime) rather than learning. Everything past
-            # this point last run was wasted compute. Halt cleanly and keep the
-            # last good checkpoint. Warmup guard: don't trigger in the first 5 steps
-            # where KL is naturally noisy/small.
+            # from base (random-walk regime) rather than learning. Halt cleanly.
+            # Warmup guard: don't trigger in the first 5 steps where KL is noisy.
             if (
                 max_kl_stop is not None
                 and global_batch > 5
@@ -676,19 +724,28 @@ async def main():
             ):
                 print(
                     f"\n⛔ KL EARLY-STOP: rolling KL {rolling_kl:.3f} exceeded "
-                    f"max_kl_stop {max_kl_stop}. Policy diverging — halting to avoid "
-                    f"wasted compute. Last checkpoint retained."
+                    f"max_kl_stop {max_kl_stop}. Policy diverging — halting."
                 )
                 stop_training = True
-                # Archive current adapter to the epoch path eval expects, since we're
-                # breaking before the normal end-of-epoch save below.
                 _stop_dir = f"./checkpoints/epoch_{epoch + 1}"
                 os.makedirs(_stop_dir, exist_ok=True)
-                if os.path.exists("./checkpoint/active_lora"):
-                    shutil.copytree(
-                        "./checkpoint/active_lora", _stop_dir, dirs_exist_ok=True
+                # Prefer the PRE-divergence checkpoint. The current adapter is
+                # already diverged; archiving it would give a broken model to eval
+                # (exactly what happened to run_6). Fall back to current only if no
+                # good checkpoint was ever saved.
+                _src = (
+                    "./checkpoint/last_good_lora"
+                    if os.path.exists("./checkpoint/last_good_lora")
+                    else "./checkpoint/active_lora"
+                )
+                if os.path.exists(_src):
+                    shutil.copytree(_src, _stop_dir, dirs_exist_ok=True)
+                    which = (
+                        "PRE-divergence (last_good)"
+                        if "last_good" in _src
+                        else "current (no good ckpt existed)"
                     )
-                    print(f"Saved early-stop checkpoint to {_stop_dir}")
+                    print(f"Saved early-stop checkpoint to {_stop_dir} from {which}")
                 break
 
         if stop_training:

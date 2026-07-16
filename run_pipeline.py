@@ -73,44 +73,39 @@ _REEVAL_COMMON = {
 }
 
 RUNS = [
-    # ── Part A: corrected re-eval of the three screen checkpoints ──
-    {
-        **_REEVAL_COMMON,
-        "name": "reeval_screen_standard",
-        "tags": ["reeval", "feedback_standard"],
-        "feedback_type": "standard",
-        "eval_checkpoint": "./checkpoints/screen_standard_final",
-    },
-    {
-        **_REEVAL_COMMON,
-        "name": "reeval_screen_consolidated",
-        "tags": ["reeval", "feedback_consolidated"],
-        "feedback_type": "consolidated",
-        "eval_checkpoint": "./checkpoints/screen_consolidated_final",
-    },
-    {
-        **_REEVAL_COMMON,
-        "name": "reeval_screen_last_failed",
-        "tags": ["reeval", "feedback_last_failed"],
-        "feedback_type": "last_failed",
-        "eval_checkpoint": "./checkpoints/screen_last_failed_final",
-    },
+    # ── Part A: re-evals COMPLETE (done 2026-07-14). Kept for reference; commented
+    #    out so the pipeline starts at run_5. Re-enable if re-evaluation is needed. ──
+    # {**_REEVAL_COMMON,
+    #     "name": "reeval_screen_standard",
+    #     "tags": ["reeval", "feedback_standard"],
+    #     "feedback_type": "standard",
+    #     "eval_checkpoint": "./checkpoints/screen_standard_final"},
+    # {**_REEVAL_COMMON,
+    #     "name": "reeval_screen_consolidated",
+    #     "tags": ["reeval", "feedback_consolidated"],
+    #     "feedback_type": "consolidated",
+    #     "eval_checkpoint": "./checkpoints/screen_consolidated_final"},
+    # {**_REEVAL_COMMON,
+    #     "name": "reeval_screen_last_failed",
+    #     "tags": ["reeval", "feedback_last_failed"],
+    #     "feedback_type": "last_failed",
+    #     "eval_checkpoint": "./checkpoints/screen_last_failed_final"},
     # ── Part B: build sequence (last_failed = feedback winner) ──
-    # run_5 proper — trains on the FULL 1200. Best-model candidate AND curriculum
-    # base (phase 1). Writes a manifest of its trained problem_ids so phase 2 can
-    # do a true unseen/seen split.
-    {
-        **_BUILD_COMMON,
-        "name": "run_5_proper_phase1",
-        "tags": ["run_5", "last_failed", "phase_1_base"],
-        "feedback_type": "last_failed",
-        "use_edge_cases": False,
-        "train_cap": 1200,
-        "curriculum_mode": "full",
-        "write_manifest": True,
-        "manifest_path": "./data/run5_trained_ids.json",
-    },
+    # run_5 COMPLETE (done 2026-07-15; checkpoint + manifest exist). Commented out
+    # so the pipeline restarts at the corrected run_6. Re-enable only to redo run_5.
+    # {**_BUILD_COMMON,
+    #     "name": "run_5_proper_phase1",
+    #     "tags": ["run_5", "last_failed", "phase_1_base"],
+    #     "feedback_type": "last_failed",
+    #     "use_edge_cases": False,
+    #     "train_cap": 1200,
+    #     "curriculum_mode": "full",
+    #     "write_manifest": True,
+    #     "manifest_path": "./data/run5_trained_ids.json"},
     # run_6 — edge cases (TDD) + turn-0 ground-truth anchor, on the winner.
+    # STABILITY OVERRIDES: the edge-case objective is rougher/higher-variance and
+    # DIVERGED at lr 2e-5 (KL blew past 0.5 in the back third). Lower LR, tighter
+    # KL leash + earlier stop, and periodic checkpoints so a halt keeps a clean save.
     {
         **_BUILD_COMMON,
         "name": "run_6_edge_cases",
@@ -119,21 +114,34 @@ RUNS = [
         "use_edge_cases": True,
         "train_cap": 1500,
         "curriculum_mode": "full",
-    },
+        "learning_rate": 1.0e-5,  # halved from 2e-5 (edge-case landscape unstable)
+        "kl_beta": 0.15,  # firmer KL penalty (was 0.1)
+        "max_kl_stop": 0.3,  # catch divergence earlier (was 0.5)
+        "checkpoint_every": 40,
+    },  # mid-run good-checkpoint cadence
     # curriculum PHASE 2 — resume run_5 checkpoint. Dataset = ALL unseen hard
     # (556) + 15% stratified seen-replay (~83) ≈ 639, ~87% hard / ~87% fresh.
     # 2 epochs to recover step count on the smaller set; KL early-stop guards the
     # 2nd-epoch overfitting/reward-hacking risk. Edge cases ON.
+    # max_turns 5 (was 3): hard problems are exactly where a 4th/5th correction turn
+    # can convert near-misses; phase_2 rolling_success was flat at 3 turns, and the
+    # 16384 window holds 5 turns even on verbose competition prompts (~9.5k tok peak).
+    # LR stays 2e-5: phase_2 uses the stable last_failed objective (run_6's
+    # divergence was specific to the edge-case reward landscape, not this one), and
+    # its 55 stable steps showed no divergence signal. checkpoint_every added since
+    # it's a 2-epoch run and we just lost one to an instance-side crash.
     {
         **_BUILD_COMMON,
         "name": "run_7_curriculum_phase2",
         "tags": ["run_7", "curriculum", "phase_2_hard_specialize"],
         "feedback_type": "last_failed",
         "use_edge_cases": True,
+        "max_turns": 5,  # deeper iteration for hard problems (was 3)
         "train_cap": 2000,  # high cap; hard_specialize sizing overrides it
         "num_epochs": 2,
         "curriculum_mode": "hard_specialize",
         "replay_frac": 0.15,
+        "checkpoint_every": 40,  # periodic good-ckpt (2 epochs; crash insurance)
         "manifest_path": "./data/run5_trained_ids.json",
         "base_model_override": "./checkpoints/run_5_proper_phase1_final",
     },
@@ -255,6 +263,9 @@ def update_yaml_config(run_config: dict):
         "max_kl_stop": run_config.get(
             "max_kl_stop", 0.5
         ),  # hard early-stop on divergence
+        "checkpoint_every": run_config.get(
+            "checkpoint_every", 40
+        ),  # periodic good-ckpt cadence
         # --- length + memory (config-driven; screen uses 16384 window @ util 0.42) ---
         "max_model_len": run_config.get(
             "max_model_len", 16384
