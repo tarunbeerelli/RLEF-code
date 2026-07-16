@@ -106,6 +106,10 @@ RUNS = [
     # STABILITY OVERRIDES: the edge-case objective is rougher/higher-variance and
     # DIVERGED at lr 2e-5 (KL blew past 0.5 in the back third). Lower LR, tighter
     # KL leash + earlier stop, and periodic checkpoints so a halt keeps a clean save.
+    # MEMORY: at 120 concurrent / util 0.38 the KV cache overflowed at peak (a
+    # truncation-heavy batch tipped it -> AsyncEngineDeadError). Fix: bs 10->8
+    # (reduces concurrency 120->96 WITHOUT shrinking GRPO groups) + util 0.38->0.45
+    # (KV room 48GB vs ~37GB peak-need at 3 turns, +11GB margin).
     {
         **_BUILD_COMMON,
         "name": "run_6_edge_cases",
@@ -114,6 +118,8 @@ RUNS = [
         "use_edge_cases": True,
         "train_cap": 1500,
         "curriculum_mode": "full",
+        "batch_size": 8,  # 8 x 12 = 96 concurrent (was 120); groups stay deep
+        "gpu_memory_utilization": 0.45,  # more KV room; +11GB peak margin at 3 turns
         "learning_rate": 1.0e-5,  # halved from 2e-5 (edge-case landscape unstable)
         "kl_beta": 0.15,  # firmer KL penalty (was 0.1)
         "max_kl_stop": 0.3,  # catch divergence earlier (was 0.5)
@@ -124,12 +130,14 @@ RUNS = [
     # 2 epochs to recover step count on the smaller set; KL early-stop guards the
     # 2nd-epoch overfitting/reward-hacking risk. Edge cases ON.
     # max_turns 5 (was 3): hard problems are exactly where a 4th/5th correction turn
-    # can convert near-misses; phase_2 rolling_success was flat at 3 turns, and the
-    # 16384 window holds 5 turns even on verbose competition prompts (~9.5k tok peak).
-    # LR stays 2e-5: phase_2 uses the stable last_failed objective (run_6's
-    # divergence was specific to the edge-case reward landscape, not this one), and
-    # its 55 stable steps showed no divergence signal. checkpoint_every added since
-    # it's a 2-epoch run and we just lost one to an instance-side crash.
+    # can convert near-misses; phase_2 rolling_success was flat at 3 turns.
+    # MEMORY: 5-turn sequences (~9500 tok peak) need MORE KV than run_6's 3-turn,
+    # so phase_2 needs LOWER concurrency than run_6 (can't reuse the same numbers).
+    # bs 7 x gen 12 = 84 concurrent @ util 0.50 -> KV room 55GB vs ~46GB peak (+9GB).
+    # gen 12 gives full GRPO group depth (better within-problem advantage on the
+    # low-solve-rate hard buckets); bs 7 still averages over 7 problems/step for
+    # gradient stability. Needs util 0.50 (not 0.47) since 84 concurrent at 5-turn
+    # lengths pushes peak KV to ~46GB; 0.47 was only +5GB (risky). Training still 70GB.
     {
         **_BUILD_COMMON,
         "name": "run_7_curriculum_phase2",
@@ -137,6 +145,9 @@ RUNS = [
         "feedback_type": "last_failed",
         "use_edge_cases": True,
         "max_turns": 5,  # deeper iteration for hard problems (was 3)
+        "batch_size": 7,  # 7 x 12 = 84 concurrent
+        "num_generations": 12,  # full group depth for low-solve-rate hard buckets
+        "gpu_memory_utilization": 0.50,  # KV room for 84 concurrent at 5-turn lengths (+9GB peak)
         "train_cap": 2000,  # high cap; hard_specialize sizing overrides it
         "num_epochs": 2,
         "curriculum_mode": "hard_specialize",
