@@ -133,11 +133,10 @@ RUNS = [
     # can convert near-misses; phase_2 rolling_success was flat at 3 turns.
     # MEMORY: 5-turn sequences (~9500 tok peak) need MORE KV than run_6's 3-turn,
     # so phase_2 needs LOWER concurrency than run_6 (can't reuse the same numbers).
-    # bs 7 x gen 12 = 84 concurrent @ util 0.50 -> KV room 55GB vs ~46GB peak (+9GB).
-    # gen 12 gives full GRPO group depth (better within-problem advantage on the
-    # low-solve-rate hard buckets); bs 7 still averages over 7 problems/step for
-    # gradient stability. Needs util 0.50 (not 0.47) since 84 concurrent at 5-turn
-    # lengths pushes peak KV to ~46GB; 0.47 was only +5GB (risky). Training still 70GB.
+    # bs 6 x gen 8 = 48 concurrent @ util 0.50 -> KV margin +29GB (huge). Deliberately
+    # CONSERVATIVE: earlier bs7xgen12 OOM'd on initial steps (long competition prompts
+    # at 5 turns spike KV). A run that COMPLETES beats an aggressive one that crashes.
+    # gen 8 still gives usable GRPO group depth for the hard buckets.
     {
         **_BUILD_COMMON,
         "name": "run_7_curriculum_phase2",
@@ -145,14 +144,14 @@ RUNS = [
         "feedback_type": "last_failed",
         "use_edge_cases": True,
         "max_turns": 5,  # deeper iteration for hard problems (was 3)
-        "batch_size": 7,  # 7 x 12 = 84 concurrent
-        "num_generations": 12,  # full group depth for low-solve-rate hard buckets
-        "gpu_memory_utilization": 0.50,  # KV room for 84 concurrent at 5-turn lengths (+9GB peak)
+        "batch_size": 6,  # 6 x 8 = 48 concurrent (large KV margin, won't OOM)
+        "num_generations": 8,  # usable group depth; conservative for completion
+        "gpu_memory_utilization": 0.50,
         "train_cap": 2000,  # high cap; hard_specialize sizing overrides it
         "num_epochs": 2,
         "curriculum_mode": "hard_specialize",
         "replay_frac": 0.15,
-        "checkpoint_every": 40,  # periodic good-ckpt (2 epochs; crash insurance)
+        "checkpoint_every": 40,  # periodic best-KL ckpt (2 epochs; crash insurance)
         "manifest_path": "./data/run5_trained_ids.json",
         "base_model_override": "./checkpoints/run_5_proper_phase1_final",
     },

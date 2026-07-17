@@ -529,6 +529,8 @@ async def main():
     empty_batch_count = 0  # legit all-zero-advantage batches (no update needed)
     partial_oom_count = 0  # steps that DID apply but dropped >=1 OOM trajectory
     traj_oom_total = 0  # cumulative individual trajectories dropped to OOM
+    best_kl = float("inf")  # lowest rolling_kl seen -> checkpoint selection
+    best_kl_step = 0
     prev_checksum = None
 
     for epoch in range(epochs):
@@ -691,31 +693,31 @@ async def main():
             )
             global_batch += 1
 
-            # --- PERIODIC "LAST GOOD" CHECKPOINT ---
-            # Snapshot the adapter while KL is still healthy so that if we later
-            # diverge and early-stop, we have a PRE-divergence checkpoint to keep
-            # instead of the damaged current one. "Good" = rolling_kl comfortably
-            # below the stop threshold. Save every `ckpt_every` steps.
+            # --- BEST-KL CHECKPOINT TRACKING ---
+            # Save `last_good` only when rolling_kl reaches a NEW MINIMUM, so it
+            # holds the LEAST-drifted policy seen so far — not merely one that was
+            # under some ceiling. The old ceiling approach kept overwriting with
+            # progressively-more-drifted checkpoints (run_6: KL crept 0.005->0.045
+            # without early-stopping, so the archived end checkpoint was the WORST
+            # one, and eval measured a reward-hacked policy -> 3.6%).
             ckpt_every = cfg.get("checkpoint_every", 40)
-            good_kl_ceiling = (max_kl_stop * 0.5) if max_kl_stop else 0.2
             if (
                 global_batch % ckpt_every == 0
                 and len(kl_window) == kl_window.maxlen
-                and rolling_kl < good_kl_ceiling
+                and rolling_kl < best_kl
             ):
+                best_kl = rolling_kl
+                best_kl_step = global_batch
                 _good_dir = "./checkpoint/last_good_lora"
                 if os.path.exists("./checkpoint/active_lora"):
                     shutil.copytree(
                         "./checkpoint/active_lora", _good_dir, dirs_exist_ok=True
                     )
                     print(
-                        f"💾 Saved last-good checkpoint at step {global_batch} (rolling_kl {rolling_kl:.3f})"
+                        f"💾 New best-KL checkpoint at step {global_batch} (rolling_kl {rolling_kl:.4f})"
                     )
 
             # --- KL EARLY-STOP ---
-            # If the rolling KL blows past the threshold, the policy is diverging
-            # from base (random-walk regime) rather than learning. Halt cleanly.
-            # Warmup guard: don't trigger in the first 5 steps where KL is noisy.
             if (
                 max_kl_stop is not None
                 and global_batch > 5
@@ -729,10 +731,6 @@ async def main():
                 stop_training = True
                 _stop_dir = f"./checkpoints/epoch_{epoch + 1}"
                 os.makedirs(_stop_dir, exist_ok=True)
-                # Prefer the PRE-divergence checkpoint. The current adapter is
-                # already diverged; archiving it would give a broken model to eval
-                # (exactly what happened to run_6). Fall back to current only if no
-                # good checkpoint was ever saved.
                 _src = (
                     "./checkpoint/last_good_lora"
                     if os.path.exists("./checkpoint/last_good_lora")
@@ -741,7 +739,7 @@ async def main():
                 if os.path.exists(_src):
                     shutil.copytree(_src, _stop_dir, dirs_exist_ok=True)
                     which = (
-                        "PRE-divergence (last_good)"
+                        f"best-KL @ step {best_kl_step}"
                         if "last_good" in _src
                         else "current (no good ckpt existed)"
                     )
@@ -751,12 +749,32 @@ async def main():
         if stop_training:
             break
 
+        # --- NORMAL END-OF-EPOCH CHECKPOINT ---
+        # Even without an early-stop, the FINAL policy may have drifted well above
+        # its best-KL point (run_6's failure mode). If the current rolling_kl is
+        # meaningfully worse than the best seen, archive the BEST-KL checkpoint
+        # instead of the drifted end state. "Meaningfully worse" = >2x best KL.
         epoch_dir = f"./checkpoints/epoch_{epoch + 1}"
         os.makedirs(epoch_dir, exist_ok=True)
-        active_path = "./checkpoint/active_lora"
-        if os.path.exists(active_path):
-            shutil.copytree(active_path, epoch_dir, dirs_exist_ok=True)
-            print(f"Saved checkpoint to {epoch_dir}")
+        drifted = (
+            best_kl < float("inf")
+            and rolling_kl > max(2.0 * best_kl, best_kl + 0.01)
+            and os.path.exists("./checkpoint/last_good_lora")
+        )
+        _end_src = (
+            "./checkpoint/last_good_lora" if drifted else "./checkpoint/active_lora"
+        )
+        if os.path.exists(_end_src):
+            shutil.copytree(_end_src, epoch_dir, dirs_exist_ok=True)
+            if drifted:
+                print(
+                    f"⚠️ End policy drifted (rolling_kl {rolling_kl:.4f} >> best {best_kl:.4f} "
+                    f"@ step {best_kl_step}). Archived BEST-KL checkpoint, not the drifted end."
+                )
+            else:
+                print(
+                    f"Saved end-of-epoch checkpoint to {epoch_dir} (rolling_kl {rolling_kl:.4f})"
+                )
 
 
 if __name__ == "__main__":
