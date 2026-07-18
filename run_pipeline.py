@@ -91,29 +91,24 @@ RUNS = [
     #     "feedback_type": "last_failed",
     #     "eval_checkpoint": "./checkpoints/screen_last_failed_final"},
     # ── Part B: build sequence (last_failed = feedback winner) ──
-    # PHASE 1 RETRAIN — the original run_5 checkpoint + manifest were lost with the
-    # instance, and phase_2 resumes from this checkpoint, so it must be rebuilt first.
-    # Config is now more efficient than the original run_5: flash-attn + gradient
-    # checkpointing (in train_agent) cut the training peak to ~36GB, which frees room
-    # to raise concurrency. bs 12 x gen 12 = 144 concurrent @ util 0.60 covers the
-    # 1200 problems in ~100 steps/epoch (vs 150 at bs 8) — ~33% fewer optimizer steps
-    # at the SAME gen-12 group depth. Writes the manifest phase_2 needs.
-    {
-        **_BUILD_COMMON,
-        "name": "run_5_proper_phase1",
-        "tags": ["run_5", "last_failed", "phase_1_base"],
-        "feedback_type": "last_failed",
-        "use_edge_cases": False,
-        "train_cap": 1200,
-        "curriculum_mode": "full",
-        "max_turns": 3,  # full-distribution phase; easy problems solve fast
-        "batch_size": 12,  # 12 x 12 = 144 concurrent (efficient; ~100 steps/epoch)
-        "num_generations": 12,  # full GRPO group depth (unchanged from run_5)
-        "gpu_memory_utilization": 0.60,  # fits 144-concurrent 3-turn KV + ~36GB training peak
-        "checkpoint_every": 40,  # best-KL checkpoint safety (instance-loss insurance)
-        "write_manifest": True,
-        "manifest_path": "./data/run5_trained_ids.json",
-    },
+    # PHASE 1 (run_5) — checkpoint + manifest RECOVERED with the instance, so this is
+    # commented out and phase_2 resumes from them directly. Re-enable ONLY if
+    # ./checkpoints/run_5_proper_phase1_final or ./data/run5_trained_ids.json is
+    # missing (verify with: ls the checkpoint dir && ls the manifest).
+    # {**_BUILD_COMMON,
+    #     "name": "run_5_proper_phase1",
+    #     "tags": ["run_5", "last_failed", "phase_1_base"],
+    #     "feedback_type": "last_failed",
+    #     "use_edge_cases": False,
+    #     "train_cap": 1200,
+    #     "curriculum_mode": "full",
+    #     "max_turns": 3,
+    #     "batch_size": 12,
+    #     "num_generations": 12,
+    #     "gpu_memory_utilization": 0.60,
+    #     "checkpoint_every": 40,
+    #     "write_manifest": True,
+    #     "manifest_path": "./data/run5_trained_ids.json"},
     # run_6 COMPLETE (trained + drifted; end-checkpoint eval = 3.6%). We do NOT
     # retrain it (diverged at both 2e-5 and 1e-5 — edge-case objective is unstable).
     # Instead, EVAL-ONLY on its saved last_good (least-drifted) checkpoint to test

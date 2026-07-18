@@ -81,7 +81,24 @@ engine_args = AsyncEngineArgs(
         "gpu_memory_utilization", 0.42
     ),  # 0.42 gives KV room for 16384 window
     max_model_len=cfg.get("max_model_len", 16384),
+    # Long 5-turn, high-concurrency batches (esp. verbose competition prompts) push
+    # context toward ~10k tokens early, making a single generation iteration exceed
+    # vLLM's default 60s watchdog, which kills the engine with AsyncEngineDeadError
+    # (an iteration TIMEOUT, not an OOM). Raising the ceiling is the fix.
+    enforce_eager=cfg.get(
+        "enforce_eager", False
+    ),  # run loads+steps fine; keep CUDA graphs for speed
 )
+# The iteration-timeout constant is module-level in vLLM; raise it before the engine
+# loop starts. Guarded so a vLLM version without it doesn't break startup.
+try:
+    import vllm.engine.async_llm_engine as _vllm_async
+
+    _vllm_async.ENGINE_ITERATION_TIMEOUT_S = cfg.get("engine_iteration_timeout_s", 300)
+except Exception as _e:
+    print(
+        f"Note: could not override ENGINE_ITERATION_TIMEOUT_S ({_e}); using vLLM default."
+    )
 vllm_engine = AsyncLLMEngine.from_engine_args(engine_args)
 
 print("Initializing PyTorch Policy Model...")
