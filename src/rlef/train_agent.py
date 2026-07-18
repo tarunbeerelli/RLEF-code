@@ -86,11 +86,31 @@ vllm_engine = AsyncLLMEngine.from_engine_args(engine_args)
 
 print("Initializing PyTorch Policy Model...")
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+
+
+def _select_attn_impl():
+    """Prefer FlashAttention-2 for the lowest activation memory, but fall back
+    gracefully when the flash_attn package isn't installed (it needs a separate
+    CUDA compile). PyTorch's built-in SDPA needs no extra install and still gives
+    memory-efficient attention; eager is the universal last resort."""
+    try:
+        import flash_attn  # noqa: F401
+
+        print("Attention backend: flash_attention_2")
+        return "flash_attention_2"
+    except ImportError:
+        print(
+            "Attention backend: sdpa (flash_attn not installed; using built-in "
+            "memory-efficient attention — no extra install needed)"
+        )
+        return "sdpa"
+
+
 base_model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME,
     torch_dtype=torch.bfloat16,
     device_map="auto",
-    attn_implementation="flash_attention_2",  # far lower activation memory than eager
+    attn_implementation=_select_attn_impl(),
 )
 
 lora_resume = cfg.get("lora_resume_path", None)

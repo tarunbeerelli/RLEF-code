@@ -22,6 +22,9 @@ matplotlib = "^3.10.0"
 pandas = "^2.2.0"
 python-dotenv = "^1.0.0"
 seaborn = "^0.13.2"
+setuptools = "^83.0.0"
+wheel = "^0.47.0"
+ninja = "^1.13.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.2"
