@@ -102,29 +102,34 @@ RUNS = [
     #     "curriculum_mode": "full",
     #     "write_manifest": True,
     #     "manifest_path": "./data/run5_trained_ids.json"},
-    # run_6 — edge cases (TDD) + turn-0 ground-truth anchor, on the winner.
-    # STABILITY OVERRIDES: the edge-case objective is rougher/higher-variance and
-    # DIVERGED at lr 2e-5 (KL blew past 0.5 in the back third). Lower LR, tighter
-    # KL leash + earlier stop, and periodic checkpoints so a halt keeps a clean save.
-    # MEMORY: at 120 concurrent / util 0.38 the KV cache overflowed at peak (a
-    # truncation-heavy batch tipped it -> AsyncEngineDeadError). Fix: bs 10->8
-    # (reduces concurrency 120->96 WITHOUT shrinking GRPO groups) + util 0.38->0.45
-    # (KV room 48GB vs ~37GB peak-need at 3 turns, +11GB margin).
+    # run_6 COMPLETE (trained + drifted; end-checkpoint eval = 3.6%). We do NOT
+    # retrain it (diverged at both 2e-5 and 1e-5 — edge-case objective is unstable).
+    # Instead, EVAL-ONLY on its saved last_good (least-drifted) checkpoint to test
+    # drift-vs-capacity: if last_good scores near run_5, drift caused the collapse;
+    # if it's also ~4-6%, edge cases genuinely don't transfer. use_edge_cases=True
+    # so the eval prompt matches how run_6 was trained.
     {
-        **_BUILD_COMMON,
-        "name": "run_6_edge_cases",
-        "tags": ["run_6", "last_failed", "edge_cases", "tdd"],
+        **_REEVAL_COMMON,
+        "name": "reeval_run_6_last_good",
+        "tags": ["reeval", "run_6", "edge_cases", "last_good_ckpt"],
         "feedback_type": "last_failed",
         "use_edge_cases": True,
-        "train_cap": 1500,
-        "curriculum_mode": "full",
-        "batch_size": 8,  # 8 x 12 = 96 concurrent (was 120); groups stay deep
-        "gpu_memory_utilization": 0.45,  # more KV room; +11GB peak margin at 3 turns
-        "learning_rate": 1.0e-5,  # halved from 2e-5 (edge-case landscape unstable)
-        "kl_beta": 0.15,  # firmer KL penalty (was 0.1)
-        "max_kl_stop": 0.3,  # catch divergence earlier (was 0.5)
-        "checkpoint_every": 40,
-    },  # mid-run good-checkpoint cadence
+        "eval_checkpoint": "./checkpoint/last_good_lora",
+    },
+    # --- run_6 TRAINING block, disabled (kept for reference; do NOT retrain) ---
+    # {**_BUILD_COMMON,
+    #     "name": "run_6_edge_cases",
+    #     "tags": ["run_6", "last_failed", "edge_cases", "tdd"],
+    #     "feedback_type": "last_failed",
+    #     "use_edge_cases": True,
+    #     "train_cap": 1500,
+    #     "curriculum_mode": "full",
+    #     "batch_size": 8,
+    #     "gpu_memory_utilization": 0.45,
+    #     "learning_rate": 1.0e-5,
+    #     "kl_beta": 0.15,
+    #     "max_kl_stop": 0.3,
+    #     "checkpoint_every": 40},
     # curriculum PHASE 2 — resume run_5 checkpoint. Dataset = ALL unseen hard
     # (556) + 15% stratified seen-replay (~83) ≈ 639, ~87% hard / ~87% fresh.
     # 2 epochs to recover step count on the smaller set; KL early-stop guards the
@@ -133,10 +138,11 @@ RUNS = [
     # can convert near-misses; phase_2 rolling_success was flat at 3 turns.
     # MEMORY: 5-turn sequences (~9500 tok peak) need MORE KV than run_6's 3-turn,
     # so phase_2 needs LOWER concurrency than run_6 (can't reuse the same numbers).
-    # bs 6 x gen 8 = 48 concurrent @ util 0.50 -> KV margin +29GB (huge). Deliberately
-    # CONSERVATIVE: earlier bs7xgen12 OOM'd on initial steps (long competition prompts
-    # at 5 turns spike KV). A run that COMPLETES beats an aggressive one that crashes.
-    # gen 8 still gives usable GRPO group depth for the hard buckets.
+    # bs 8 x gen 12 = 96 concurrent @ util 0.60 — the standard config, now feasible
+    # at 5 turns because FlashAttention-2 + gradient checkpointing cut the training
+    # peak to ~36GB (from ~54GB), freeing enough of the 141GB for vLLM to hold the
+    # 96-concurrent 5-turn KV cache. vLLM 84GB (KV room 69 vs ~52 need, +17 margin),
+    # PyTorch 56GB vs ~36 peak. Full-depth GRPO groups (gen 12) on the hard buckets.
     {
         **_BUILD_COMMON,
         "name": "run_7_curriculum_phase2",
@@ -144,9 +150,9 @@ RUNS = [
         "feedback_type": "last_failed",
         "use_edge_cases": True,
         "max_turns": 5,  # deeper iteration for hard problems (was 3)
-        "batch_size": 6,  # 6 x 8 = 48 concurrent (large KV margin, won't OOM)
-        "num_generations": 8,  # usable group depth; conservative for completion
-        "gpu_memory_utilization": 0.50,
+        "batch_size": 8,  # 8 x 12 = 96 concurrent (standard)
+        "num_generations": 12,  # full GRPO group depth for the hard buckets
+        "gpu_memory_utilization": 0.60,  # fits 96-concurrent 5-turn KV + ~36GB training peak
         "train_cap": 2000,  # high cap; hard_specialize sizing overrides it
         "num_epochs": 2,
         "curriculum_mode": "hard_specialize",

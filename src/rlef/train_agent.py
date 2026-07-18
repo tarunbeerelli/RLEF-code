@@ -90,6 +90,7 @@ base_model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME,
     torch_dtype=torch.bfloat16,
     device_map="auto",
+    attn_implementation="flash_attention_2",  # far lower activation memory than eager
 )
 
 lora_resume = cfg.get("lora_resume_path", None)
@@ -108,6 +109,18 @@ else:
         target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],
     )
     policy_model = get_peft_model(base_model, lora_config)
+
+# Gradient checkpointing: recompute activations during backward instead of storing
+# the full stack, cutting peak activation memory by ~60-70% at a ~20-30% compute
+# cost. This is the structural fix for training-side OOM on long multi-turn (5-turn)
+# trajectories — memory is the binding constraint on a single GPU, not compute.
+# use_reentrant=False is the modern, PEFT-compatible variant; enable_input_require_grads
+# is required so gradients flow to the LoRA adapter through the checkpointed graph.
+policy_model.gradient_checkpointing_enable(
+    gradient_checkpointing_kwargs={"use_reentrant": False}
+)
+policy_model.enable_input_require_grads()
+policy_model.config.use_cache = False  # required with gradient checkpointing
 
 optimizer = torch.optim.AdamW(
     policy_model.parameters(), lr=cfg.get("learning_rate", 5e-6)
