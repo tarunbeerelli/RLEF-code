@@ -13,6 +13,13 @@ import os
 # after imports (no E402); children read it from the inherited environment.
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
+# Use the local HF cache instead of contacting the Hub at model-load time. The 7B
+# is already cached from training, so eval/train need no network — this avoids the
+# HTTP 429 (rate limit) that can hit engine startup on fresh/shared instances.
+# Subprocesses (train_agent, evaluate) inherit these from the environment.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
 # ─── 1. RUN SEQUENCE ─────────────────────────────────────────────────────────
 # Part A: RE-EVAL the three screen checkpoints (3/4/5) under the CORRECTED
 #         per-arm eval prompt (right max_turns AND right feedback_type, plus
@@ -73,6 +80,55 @@ _REEVAL_COMMON = {
 }
 
 RUNS = [
+    # ── phase_2 best-KL checkpoint eval ──────────────────────────────────────
+    # phase_2's END checkpoint is already eval'd (the current run_7 result). But KL
+    # climbed through epoch 2 (mild drift on seen-data replay — faster commits, more
+    # wrong outputs, less iteration), so the END policy may generalize WORSE than the
+    # least-drifted (best-KL) checkpoint from ~epoch 1. Eval that one too and compare:
+    # if best-KL beats END on hard-bucket pass@k, epoch 2 traded generalization for
+    # memorized-commit speed, and best-KL is the checkpoint to report.
+    # NOTE: ./checkpoint/last_good_lora is transient — eval this BEFORE launching any
+    # new training run, or it will be overwritten.
+    {
+        **_REEVAL_COMMON,
+        "name": "reeval_phase2_best_kl",
+        "tags": ["reeval", "run_7", "curriculum", "best_kl_ckpt"],
+        "feedback_type": "last_failed",
+        "use_edge_cases": True,
+        "max_turns": 5,
+        "eval_checkpoint": "./checkpoint/last_good_lora",
+    },
+    # end-of-EPOCH-1 checkpoint. The archival step mv'd epoch_2 -> _final and left
+    # epoch_1 in place, so this is the policy at the epoch boundary — a full first
+    # pass over the hard set, BEFORE epoch-2's seen-replay drift (rising KL, faster
+    # commits, more wrong outputs). Three-way compare: best-KL vs epoch-1 vs epoch-2
+    # (end, already eval'd). If epoch-1 >= epoch-2 on hard-bucket pass@k, epoch 2 was
+    # net-negative for generalization — a clean train-vs-eval divergence result.
+    # NOTE: verify ./checkpoints/epoch_1 exists before running (ls it); if the run
+    # early-stopped or the dir was cleaned, this will fail.
+    {
+        **_REEVAL_COMMON,
+        "name": "reeval_phase2_epoch1",
+        "tags": ["reeval", "run_7", "curriculum", "epoch_1_ckpt"],
+        "feedback_type": "last_failed",
+        "use_edge_cases": True,
+        "max_turns": 5,
+        "eval_checkpoint": "./checkpoints/epoch_1",
+    },
+    # end / EPOCH-2 checkpoint (the archival step mv'd epoch_2 -> _final, so this IS
+    # epoch 2 / the final policy). Its original eval failed on an HF 429; re-run it
+    # here with the offline env vars set at the top of this file so all three
+    # phase_2 checkpoints (best-KL, epoch_1, epoch_2) get clean, comparable numbers
+    # from one pass.
+    {
+        **_REEVAL_COMMON,
+        "name": "reeval_phase2_epoch2_final",
+        "tags": ["reeval", "run_7", "curriculum", "epoch_2_final_ckpt"],
+        "feedback_type": "last_failed",
+        "use_edge_cases": True,
+        "max_turns": 5,
+        "eval_checkpoint": "./checkpoints/run_7_curriculum_phase2_final",
+    },
     # ── Part A: re-evals COMPLETE (done 2026-07-14). Kept for reference; commented
     #    out so the pipeline starts at run_5. Re-enable if re-evaluation is needed. ──
     # {**_REEVAL_COMMON,
@@ -152,24 +208,24 @@ RUNS = [
     # peak to ~36GB (from ~54GB), freeing enough of the 141GB for vLLM to hold the
     # 96-concurrent 5-turn KV cache. vLLM 84GB (KV room 69 vs ~52 need, +17 margin),
     # PyTorch 56GB vs ~36 peak. Full-depth GRPO groups (gen 12) on the hard buckets.
-    {
-        **_BUILD_COMMON,
-        "name": "run_7_curriculum_phase2",
-        "tags": ["run_7", "curriculum", "phase_2_hard_specialize"],
-        "feedback_type": "last_failed",
-        "use_edge_cases": True,
-        "max_turns": 5,  # deeper iteration for hard problems (was 3)
-        "batch_size": 8,  # 8 x 12 = 96 concurrent (standard)
-        "num_generations": 12,  # full GRPO group depth for the hard buckets
-        "gpu_memory_utilization": 0.60,  # fits 96-concurrent 5-turn KV + ~36GB training peak
-        "train_cap": 2000,  # high cap; hard_specialize sizing overrides it
-        "num_epochs": 2,
-        "curriculum_mode": "hard_specialize",
-        "replay_frac": 0.15,
-        "checkpoint_every": 40,  # periodic best-KL ckpt (2 epochs; crash insurance)
-        "manifest_path": "./data/run5_trained_ids.json",
-        "base_model_override": "./checkpoints/run_5_proper_phase1_final",
-    },
+    # phase_2 TRAINING COMPLETE (done 2026-07-18). Commented out so only the best-KL
+    # eval above runs. Re-enable only to retrain. End checkpoint already eval'd.
+    # {**_BUILD_COMMON,
+    #     "name": "run_7_curriculum_phase2",
+    #     "tags": ["run_7", "curriculum", "phase_2_hard_specialize"],
+    #     "feedback_type": "last_failed",
+    #     "use_edge_cases": True,
+    #     "max_turns": 5,
+    #     "batch_size": 8,
+    #     "num_generations": 12,
+    #     "gpu_memory_utilization": 0.60,
+    #     "train_cap": 2000,
+    #     "num_epochs": 2,
+    #     "curriculum_mode": "hard_specialize",
+    #     "replay_frac": 0.15,
+    #     "checkpoint_every": 40,
+    #     "manifest_path": "./data/run5_trained_ids.json",
+    #     "base_model_override": "./checkpoints/run_5_proper_phase1_final"},
 ]
 
 # ─── ARCHIVED: full ablation suite (Stage 2 + curriculum, restore when needed) ─
