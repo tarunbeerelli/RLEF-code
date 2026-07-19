@@ -139,11 +139,17 @@ if lora_resume and os.path.exists(lora_resume):
 else:
     print("🌟 Fresh LoRA weights...")
     lora_rank = cfg.get("lora_rank", 16)
+    # Default targets the 4 attention projections (the run_5 setting: minimal
+    # adaptation surface). A run can widen to all 7 linear layers — adding the MLP
+    # (gate/up/down_proj), where most of the transformer's computation lives — via
+    # lora_target_modules in config, to test whether adaptation *reach* (not rank)
+    # is what converts weak self-correction signal to strong.
+    _default_targets = ["q_proj", "v_proj", "k_proj", "o_proj"]
     lora_config = LoraConfig(
         r=lora_rank,
         lora_alpha=cfg.get("lora_alpha", lora_rank * 2),  # scale alpha with rank
         lora_dropout=0.0,
-        target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],
+        target_modules=cfg.get("lora_target_modules", _default_targets),
     )
     policy_model = get_peft_model(base_model, lora_config)
 

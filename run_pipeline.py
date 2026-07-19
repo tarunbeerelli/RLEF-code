@@ -76,28 +76,60 @@ _REEVAL_COMMON = {
     "gpu_memory_utilization": 0.60,  # eval-only: no training memory, can use more
     "start_temp": 0.7,
     "end_temp": 0.7,
-    "train_cap": 300,  # unused in eval_only but kept for config completeness
+    # NOTE: eval scores the full held-out set (up to 250/bucket -> ~702 total:
+    # 250 intro + 250 interview + 202 competition). It does NOT read train_cap;
+    # that field is training-only, so it's omitted here to avoid confusion.
 }
 
 RUNS = [
-    # ── phase_2 best-KL checkpoint eval ──────────────────────────────────────
-    # phase_2's END checkpoint is already eval'd (the current run_7 result). But KL
-    # climbed through epoch 2 (mild drift on seen-data replay — faster commits, more
-    # wrong outputs, less iteration), so the END policy may generalize WORSE than the
-    # least-drifted (best-KL) checkpoint from ~epoch 1. Eval that one too and compare:
-    # if best-KL beats END on hard-bucket pass@k, epoch 2 traded generalization for
-    # memorized-commit speed, and best-KL is the checkpoint to report.
-    # NOTE: ./checkpoint/last_good_lora is transient — eval this BEFORE launching any
-    # new training run, or it will be overwritten.
+    # ── RUN A2: adaptation-REACH test ────────────────────────────────────────
+    # run_5 established weak-but-valid self-correction signal with the MINIMAL
+    # adaptation surface (rank-32 LoRA on the 4 attention projections only). A2 holds
+    # rank fixed at 32 and widens the surface to all 7 linear layers — adding the MLP
+    # (gate/up/down_proj), where most of the transformer's computation lives — to test
+    # whether adaptation REACH, not rank/capacity, is what converts the weak signal to
+    # strong. Everything else is identical to run_5 (full distribution, last_failed,
+    # 3-turn, no edge cases) so REACH is the only variable. All-7 is 4x the trainable
+    # params (20M -> 81M) but only +0.7GB state — activations dominate and are
+    # unchanged. Writes its own manifest so a future curriculum phase can reuse it.
     {
-        **_REEVAL_COMMON,
-        "name": "reeval_phase2_best_kl",
-        "tags": ["reeval", "run_7", "curriculum", "best_kl_ckpt"],
+        **_BUILD_COMMON,
+        "name": "run_A2_all_layers",
+        "tags": ["run_A2", "last_failed", "all_linear_layers", "reach_test"],
         "feedback_type": "last_failed",
-        "use_edge_cases": True,
-        "max_turns": 5,
-        "eval_checkpoint": "./checkpoint/last_good_lora",
+        "use_edge_cases": False,
+        "train_cap": 1200,
+        "curriculum_mode": "full",
+        "max_turns": 3,
+        "batch_size": 12,  # 12 x 12 = 144 concurrent, ~100 steps/epoch
+        "num_generations": 12,
+        "gpu_memory_utilization": 0.60,  # KV room +13G, PyTorch 56G vs ~38G peak
+        "lora_rank": 32,  # UNCHANGED from run_5 — reach is the variable, not rank
+        "lora_alpha": 64,
+        "lora_target_modules": [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ],  # all 7 (adds MLP)
+        "checkpoint_every": 40,
+        "write_manifest": True,
+        "manifest_path": "./data/runA2_trained_ids.json",
     },
+    # ── phase_2 checkpoint evals — COMPLETE (done 2026-07-18). Commented out. ──
+    # best-KL: intro 7.6 / interview 3.6 / comp 0.0 (pass@5 11.6/3.6/0.0)
+    # epoch_1: intro 7.6 / interview 2.8 / comp 0.5 (pass@5 11.2/3.2/0.5)
+    # epoch_2 (final, BEST): intro 8.8 / interview 3.2 / comp 0.0 (pass@5 14.8/4.0/0.5)
+    # {**_REEVAL_COMMON,
+    #     "name": "reeval_phase2_best_kl",
+    #     "tags": ["reeval", "run_7", "curriculum", "best_kl_ckpt"],
+    #     "feedback_type": "last_failed",
+    #     "use_edge_cases": True,
+    #     "max_turns": 5,
+    #     "eval_checkpoint": "./checkpoint/last_good_lora"},
     # end-of-EPOCH-1 checkpoint. The archival step mv'd epoch_2 -> _final and left
     # epoch_1 in place, so this is the policy at the epoch boundary — a full first
     # pass over the hard set, BEFORE epoch-2's seen-replay drift (rising KL, faster
@@ -106,29 +138,20 @@ RUNS = [
     # net-negative for generalization — a clean train-vs-eval divergence result.
     # NOTE: verify ./checkpoints/epoch_1 exists before running (ls it); if the run
     # early-stopped or the dir was cleaned, this will fail.
-    {
-        **_REEVAL_COMMON,
-        "name": "reeval_phase2_epoch1",
-        "tags": ["reeval", "run_7", "curriculum", "epoch_1_ckpt"],
-        "feedback_type": "last_failed",
-        "use_edge_cases": True,
-        "max_turns": 5,
-        "eval_checkpoint": "./checkpoints/epoch_1",
-    },
-    # end / EPOCH-2 checkpoint (the archival step mv'd epoch_2 -> _final, so this IS
-    # epoch 2 / the final policy). Its original eval failed on an HF 429; re-run it
-    # here with the offline env vars set at the top of this file so all three
-    # phase_2 checkpoints (best-KL, epoch_1, epoch_2) get clean, comparable numbers
-    # from one pass.
-    {
-        **_REEVAL_COMMON,
-        "name": "reeval_phase2_epoch2_final",
-        "tags": ["reeval", "run_7", "curriculum", "epoch_2_final_ckpt"],
-        "feedback_type": "last_failed",
-        "use_edge_cases": True,
-        "max_turns": 5,
-        "eval_checkpoint": "./checkpoints/run_7_curriculum_phase2_final",
-    },
+    # {**_REEVAL_COMMON,
+    #     "name": "reeval_phase2_epoch1",
+    #     "tags": ["reeval", "run_7", "curriculum", "epoch_1_ckpt"],
+    #     "feedback_type": "last_failed",
+    #     "use_edge_cases": True,
+    #     "max_turns": 5,
+    #     "eval_checkpoint": "./checkpoints/epoch_1"},
+    # {**_REEVAL_COMMON,
+    #     "name": "reeval_phase2_epoch2_final",
+    #     "tags": ["reeval", "run_7", "curriculum", "epoch_2_final_ckpt"],
+    #     "feedback_type": "last_failed",
+    #     "use_edge_cases": True,
+    #     "max_turns": 5,
+    #     "eval_checkpoint": "./checkpoints/run_7_curriculum_phase2_final"},
     # ── Part A: re-evals COMPLETE (done 2026-07-14). Kept for reference; commented
     #    out so the pipeline starts at run_5. Re-enable if re-evaluation is needed. ──
     # {**_REEVAL_COMMON,
@@ -336,6 +359,10 @@ def update_yaml_config(run_config: dict):
         ),  # stable LR (1e-4 diverged)
         "lora_rank": run_config.get("lora_rank", 32),
         "lora_alpha": run_config.get("lora_alpha", 64),
+        "lora_target_modules": run_config.get(
+            "lora_target_modules",
+            ["q_proj", "v_proj", "k_proj", "o_proj"],
+        ),
         "train_cap": run_config.get(
             "train_cap", 1200
         ),  # stratified total training problems
