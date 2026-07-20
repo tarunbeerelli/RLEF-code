@@ -1,6 +1,9 @@
 """
-run_pipeline.py — Sequential Ablation Orchestrator
-Dynamically rewrites train.yaml and executes data prep, training, and evaluation.
+run_pipeline.py — Sequential experiment orchestrator.
+
+Rewrites train.yaml per run and executes data prep, training, and evaluation in
+sequence, so a multi-run study executes unattended. Ensures the base model is
+cached once, then runs subprocesses offline to avoid Hub rate limits.
 """
 
 import subprocess
@@ -13,23 +16,60 @@ import os
 # after imports (no E402); children read it from the inherited environment.
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
-# Use the local HF cache instead of contacting the Hub at model-load time. The 7B
-# is already cached from training, so eval/train need no network — this avoids the
-# HTTP 429 (rate limit) that can hit engine startup on fresh/shared instances.
-# Subprocesses (train_agent, evaluate) inherit these from the environment.
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+# HF Hub access strategy: download the model ONCE if it isn't cached, then force
+# offline for all training/eval subprocesses. This avoids the HTTP 429 rate-limit
+# that hits engine startup on warm instances, while still working on a FRESH
+# instance (where an unconditional offline setting would block the needed first
+# download). Subprocesses inherit whatever we set here from the environment.
+_HF_MODEL = "Qwen/Qwen2.5-Coder-7B-Instruct"
+
+
+def _ensure_model_cached():
+    """Return True if the model is available locally (already cached, or freshly
+    downloaded here). On a fresh instance this performs a single online download;
+    on a warm instance it's a no-op. After this, subprocesses can run fully offline."""
+    from huggingface_hub import snapshot_download
+
+    try:
+        # local_files_only first: fast no-op if already cached.
+        snapshot_download(_HF_MODEL, local_files_only=True)
+        print(f"[hf] '{_HF_MODEL}' already cached — running offline.")
+        return True
+    except Exception:
+        print(
+            f"[hf] '{_HF_MODEL}' not cached — downloading once (this may take a while)..."
+        )
+        try:
+            snapshot_download(_HF_MODEL)  # online, one time; populates the cache
+            print("[hf] download complete — cached for all subsequent runs.")
+            return True
+        except Exception as e:
+            print(
+                f"[hf] WARNING: prefetch failed ({e}). Subprocesses will attempt "
+                f"their own download; if this is a 429, wait and retry."
+            )
+            return False
+
+
+_cached = _ensure_model_cached()
+# Only force offline once the model is confirmed present, so a fresh instance's
+# first-ever download isn't blocked. If prefetch failed, leave online so the
+# subprocess can try (and surface a clear error if the Hub is rate-limiting).
+if _cached:
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 # ─── 1. RUN SEQUENCE ─────────────────────────────────────────────────────────
-# Part A: RE-EVAL the three screen checkpoints (3/4/5) under the CORRECTED
-#         per-arm eval prompt (right max_turns AND right feedback_type, plus
-#         eval feedback strings now mirror training exactly). No retraining —
-#         just a clean feedback comparison on checkpoints we already have.
-# Part B: BUILD sequence, concluding last_failed is the feedback winner:
-#   - run_5_proper: last_failed @ train_cap 1200 (doubles as curriculum phase 1)
-#   - run_6_edge_cases: winner + edge_cases + turn-0 anchor @ train_cap 1500
-#   - phase_2: run_6 specs on top of phase_1 checkpoint @ train_cap 1200
-# All build runs: 1 epoch, bs 10 x 12 gen = 120 concurrent, stable optimizer.
+# The list below defines the experiment sequence. Completed runs are retained,
+# commented out, as a documented record of the study; the active entries are the
+# runs to execute next. Evaluation uses a matched per-arm harness (the eval prompt
+# is rebuilt to the run's max_turns and feedback_type, and eval feedback strings
+# mirror training exactly), so every comparison is like-for-like.
+#   - scaled full-distribution run: last_failed @ train_cap 1200 (also serves as
+#     curriculum phase 1)
+#   - test-driven run: adds model-generated edge cases @ train_cap 1500
+#   - curriculum phase 2: continues the phase-1 checkpoint on hard problems
+# Shared multi-turn physics is defined in _BUILD_COMMON below.
 
 # Shared physics for the multi-turn build runs.
 _BUILD_COMMON = {
@@ -82,29 +122,51 @@ _REEVAL_COMMON = {
 }
 
 RUNS = [
-    # ── RUN A2: adaptation-REACH test ────────────────────────────────────────
-    # run_5 established weak-but-valid self-correction signal with the MINIMAL
-    # adaptation surface (rank-32 LoRA on the 4 attention projections only). A2 holds
-    # rank fixed at 32 and widens the surface to all 7 linear layers — adding the MLP
-    # (gate/up/down_proj), where most of the transformer's computation lives — to test
-    # whether adaptation REACH, not rank/capacity, is what converts the weak signal to
-    # strong. Everything else is identical to run_5 (full distribution, last_failed,
-    # 3-turn, no edge cases) so REACH is the only variable. All-7 is 4x the trainable
-    # params (20M -> 81M) but only +0.7GB state — activations dominate and are
-    # unchanged. Writes its own manifest so a future curriculum phase can reuse it.
+    # ── Baseline evaluation (untrained model, matched harness) ────────────────
+    # Establishes the denominator for the fixed-test-conditioning study on the same
+    # 3-turn, last_failed harness the trained runs use, so trained-vs-base is a like-
+    # for-like comparison (and directly comparable to the scaled full-distribution
+    # run and the all-linear-layers reach run, which share this harness).
+    {
+        **_REEVAL_COMMON,
+        "name": "baseline_3turn_last_failed",
+        "tags": ["baseline", "last_failed", "matched_harness"],
+        "feedback_type": "last_failed",
+        "max_turns": 3,
+        "baseline": True,
+    },  # evaluate the base model, no adapter
+    # ── Fixed-test-conditioning run (standalone, from base) ───────────────────
+    # Conditions the policy on REAL test cases instead of model-generated ones. Data
+    # prep partitions each problem's cases into a shown set (surfaced as executed
+    # `real_tests` feedback between turns) and a disjoint graded set (held out for the
+    # reward), so the model is never shown a case it is scored on. All seven linear
+    # layers are adapted; full distribution; three turns. Isolates whether a
+    # test-conditioned objective, grounded in real held-out tests rather than
+    # self-generated ones, produces a self-correction signal.
+    # Context-aware sizing: full distribution includes long competition problems whose
+    # context (statement + shown cases + revisions) reaches ~15k tokens; bs 8 x gen 8
+    # at util 0.65 keeps the KV cache within budget at that length while retaining an
+    # 8-wide GRPO group.
     {
         **_BUILD_COMMON,
-        "name": "run_A2_all_layers",
-        "tags": ["run_A2", "last_failed", "all_linear_layers", "reach_test"],
-        "feedback_type": "last_failed",
+        "name": "run_B1_fixed_tests",
+        "tags": ["fixed_test_conditioning", "real_tests", "all_linear_layers"],
+        "feedback_type": "real_tests",
         "use_edge_cases": False,
+        "fixed_test_conditioning": True,
+        "n_shown_tests": 3,
+        "min_graded_tests": 2,
         "train_cap": 1200,
         "curriculum_mode": "full",
         "max_turns": 3,
-        "batch_size": 12,  # 12 x 12 = 144 concurrent, ~100 steps/epoch
+        "batch_size": 8,  # 8 x 12 = 96 concurrent, full GRPO group depth
         "num_generations": 12,
-        "gpu_memory_utilization": 0.60,  # KV room +13G, PyTorch 56G vs ~38G peak
-        "lora_rank": 32,  # UNCHANGED from run_5 — reach is the variable, not rank
+        "gpu_memory_utilization": 0.65,  # KV fits the common (<~12.5k) full-distribution
+        # context; long competition-problem batches are
+        # the tail and vLLM preempts (throttles) rather
+        # than OOMs if they cluster. Drop to gen 8 if
+        # preemption is frequent in the logs.
+        "lora_rank": 32,
         "lora_alpha": 64,
         "lora_target_modules": [
             "q_proj",
@@ -114,11 +176,72 @@ RUNS = [
             "gate_proj",
             "up_proj",
             "down_proj",
-        ],  # all 7 (adds MLP)
+        ],
         "checkpoint_every": 40,
         "write_manifest": True,
-        "manifest_path": "./data/runA2_trained_ids.json",
+        "manifest_path": "./data/runB1_trained_ids.json",
     },
+    # ── Curriculum amplification with fixed-test-conditioning (STAGED) ────────
+    # Enable after the fixed-test run above lands. Warm-starts from the scaled full-
+    # distribution checkpoint and continues on hard-specialized UNSEEN problems (a
+    # manifest of the phase-1 problem ids guarantees a disjoint split) with the same
+    # real_tests feedback. Attention-only, matching the minimal-adaptation-surface
+    # thesis. Tests whether curriculum plus real-test conditioning amplifies the
+    # signal into the harder tiers.
+    # Context-aware sizing: hard-specialized data is ALL long problems, so ~15k tokens
+    # is the norm here, not the tail; bs 6 x gen 12 at util 0.65 holds the full 12-wide
+    # GRPO group (which matters most on hard problems) within the KV budget at 15k.
+    # {**_BUILD_COMMON,
+    #     "name": "run_phase2_B1_curriculum",
+    #     "tags": ["curriculum", "real_tests", "attn_only", "hard_specialize"],
+    #     "feedback_type": "real_tests",
+    #     "use_edge_cases": False,
+    #     "fixed_test_conditioning": True,
+    #     "n_shown_tests": 3,
+    #     "min_graded_tests": 2,
+    #     "max_turns": 3,
+    #     "batch_size": 6,                 # 6 x 12 = 72 concurrent; hard-specialize data is
+    #                                      # ALL long-context (~15k the norm, not the tail),
+    #                                      # so this stays conservative to avoid throttling.
+    #     "num_generations": 12,
+    #     "gpu_memory_utilization": 0.65,  # KV room ~76G vs ~62G need at 15k; PyTorch ~49G
+    #     "lora_rank": 32,
+    #     "lora_alpha": 64,
+    #     "lora_target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"],  # attention-only
+    #     "train_cap": 2000,
+    #     "num_epochs": 2,
+    #     "curriculum_mode": "hard_specialize",
+    #     "replay_frac": 0.15,
+    #     "checkpoint_every": 40,
+    #     "manifest_path": "./data/run5_trained_ids.json",   # disjoint split vs phase 1
+    #     "base_model_override": "./checkpoints/run_5_proper_phase1_final"},
+    # ── Adaptation-reach run (RUNNING SEPARATELY / kept as record) ────────────
+    # Holds LoRA rank fixed and widens the adaptation surface from the four attention
+    # projections to all seven linear layers, adding the MLP (gate/up/down_proj) where
+    # most of the transformer's computation resides. Otherwise identical to the scaled
+    # full-distribution run (full distribution, last_failed feedback, 3 turns), so the
+    # adaptation reach is the only variable. All-seven is ~4x the trainable parameters
+    # (~20M -> ~81M) at negligible additional optimizer state. last_failed feedback
+    # does not append shown test cases, so its contexts stay shorter than the
+    # fixed-test runs; bs 12 x gen 12 at util 0.60 is sized accordingly.
+    # {**_BUILD_COMMON,
+    #     "name": "run_A2_all_layers",
+    #     "tags": ["run_A2", "last_failed", "all_linear_layers", "reach_test"],
+    #     "feedback_type": "last_failed",
+    #     "use_edge_cases": False,
+    #     "train_cap": 1200,
+    #     "curriculum_mode": "full",
+    #     "max_turns": 3,
+    #     "batch_size": 12,
+    #     "num_generations": 12,
+    #     "gpu_memory_utilization": 0.60,
+    #     "lora_rank": 32,
+    #     "lora_alpha": 64,
+    #     "lora_target_modules": ["q_proj", "k_proj", "v_proj", "o_proj",
+    #                             "gate_proj", "up_proj", "down_proj"],
+    #     "checkpoint_every": 40,
+    #     "write_manifest": True,
+    #     "manifest_path": "./data/runA2_trained_ids.json"},
     # ── phase_2 checkpoint evals — COMPLETE (done 2026-07-18). Commented out. ──
     # best-KL: intro 7.6 / interview 3.6 / comp 0.0 (pass@5 11.6/3.6/0.0)
     # epoch_1: intro 7.6 / interview 2.8 / comp 0.5 (pass@5 11.2/3.2/0.5)
@@ -401,6 +524,11 @@ def update_yaml_config(run_config: dict):
                 "manifest_path", "./data/run5_trained_ids.json"
             ),
             "replay_frac": run_config.get("replay_frac", 0.15),
+            # B1 fixed-test-conditioning (read by prepare_openrlhf_data + train_agent).
+            # Defaults keep every prior run's behavior unchanged.
+            "fixed_test_conditioning": run_config.get("fixed_test_conditioning", False),
+            "n_shown_tests": run_config.get("n_shown_tests", 5),
+            "min_graded_tests": run_config.get("min_graded_tests", 2),
         },
         "evaluation": {
             "dataset_path": "./data/apps_eval.jsonl",
@@ -448,15 +576,18 @@ def main():
         # per-arm eval prompt. No data-prep-train, no archival. Used to get a clean
         # feedback comparison on checkpoints 3/4/5 that were already trained.
         if run.get("eval_only"):
-            # Still refresh eval data so the arm-agnostic v2 eval file exists.
+            # Still refresh eval data so the arm-agnostic eval file exists.
             run_command(
                 "PYTHONPATH=src python3 src/rlef/prepare_openrlhf_data.py",
                 "Eval Data Refresh (eval_only)",
             )
             run_command("ray stop --force", "vLLM Memory Flush")
+            # `baseline: True` evaluates the untrained base model (no adapter) on the
+            # matched harness — the reference denominator for the trained runs.
+            _baseline_flag = " --baseline" if run.get("baseline") else ""
             run_command(
-                "PYTHONPATH=src python3 src/rlef/evaluate.py",
-                f"Re-Eval Existing Checkpoint ({run['name']})",
+                f"PYTHONPATH=src python3 src/rlef/evaluate.py{_baseline_flag}",
+                f"{'Baseline' if run.get('baseline') else 'Re-Eval'} ({run['name']})",
             )
             continue
 

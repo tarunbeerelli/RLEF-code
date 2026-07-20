@@ -1,42 +1,37 @@
 """
-train_agent.py — Configurable Asynchronous RLHF Agent Loop (CORRECTED GRPO)
+train_agent.py — Configurable asynchronous multi-turn GRPO training loop.
 
-Executes multi-turn rollouts using vLLM, then performs a correct token-level
-GRPO update against a FROZEN reference and the BEHAVIOR-policy logprobs captured
-at generation time.
+Executes multi-turn rollouts with vLLM (generate -> execute -> feedback -> revise),
+then performs a token-level Group Relative Policy Optimization (GRPO) update against
+a frozen reference policy using the behavior-policy log-probabilities captured at
+generation time.
 
-KEY FIXES vs. previous version
-------------------------------
-1. GRPO math was fundamentally wrong before:
-   - It took F.log_softmax over the full [seq, vocab] tensor and never gathered
-     the log-prob of the *sampled tokens*. => the "ratio" was noise.
-   - It computed loss over prompt + completion with no completion mask. => the
-     (huge) prompt dominated any surviving signal.
-   - The "reference" was the same LoRA network with the adapter disabled, which
-     is also what `beta` regularizes toward => the objective fought its own KL.
-   Now: we gather per-token logprobs of the taken tokens, mask to completion
-   spans only, use a frozen base snapshot as the reference, and compute the
-   importance ratio against the behavior logprobs recorded during rollout.
+GRPO update
+-----------
+- Per-token log-probabilities of the sampled completion tokens are gathered and the
+  loss is masked to the completion span, so the prompt does not contribute to the
+  gradient.
+- The importance ratio is formed against the behavior log-probabilities recorded
+  during rollout, and the KL penalty is taken against a frozen base-model snapshot
+  (distinct from the trainable policy, so the objective does not regularize toward
+  itself).
+- Advantages are standardized within each prompt's sampled group (the defining
+  feature of GRPO), falling back to batch-level standardization when only one
+  sample per prompt is available. Raw signed rewards are used for the advantage so
+  penalized trajectories retain variance.
 
-2. vLLM adapter staleness: we now bump the LoRA request ID every update so vLLM
-   is forced to reload the freshly-saved adapter instead of serving a cached one.
+Adapter freshness
+-----------------
+The vLLM LoRA request id is incremented every update so the engine reloads the
+freshly-saved adapter rather than serving a cached one.
 
-3. reward = max(0.0, r) previously collapsed all penalized trajectories to
-   exactly 0, killing advantage variance. We keep raw (signed) rewards for the
-   advantage computation; clipping is removed.
-
-4. GRPO advantages are normalized *within prompt groups* (the defining feature
-   of GRPO), falling back to batch-level normalization when only one sample per
-   prompt exists.
-
-NOTE ON ROLLOUT LOGPROBS
-------------------------
-True on-policy PPO/GRPO needs the sampling distribution's logprobs as the
-denominator of the importance ratio. vLLM can return these via
-SamplingParams(logprobs=...) / prompt_logprobs. We request them and, when
-available, use them as the behavior logprobs. If they are missing for a
-trajectory, we fall back to treating the ratio as 1 (REINFORCE-style) for that
-trajectory rather than fabricating a denominator.
+Rollout log-probabilities
+-------------------------
+On-policy GRPO uses the sampling distribution's log-probabilities as the denominator
+of the importance ratio. These are requested from vLLM via SamplingParams and used as
+the behavior log-probabilities when returned; if they are unavailable for a
+trajectory, that trajectory falls back to a REINFORCE-style unit ratio rather than a
+fabricated denominator.
 """
 
 import asyncio
@@ -84,7 +79,7 @@ engine_args = AsyncEngineArgs(
     # Long 5-turn, high-concurrency batches (esp. verbose competition prompts) push
     # context toward ~10k tokens early, making a single generation iteration exceed
     # vLLM's default 60s watchdog, which kills the engine with AsyncEngineDeadError
-    # (an iteration TIMEOUT, not an OOM). Raising the ceiling is the fix.
+    # (an iteration timeout, not an OOM), so the ceiling is raised accordingly.
     enforce_eager=cfg.get(
         "enforce_eager", False
     ),  # run loads+steps fine; keep CUDA graphs for speed
@@ -225,6 +220,12 @@ async def run_single_episode(
     inputs = problem_data.get("inputs", [])
     outputs = problem_data.get("outputs", [])
     fn_name = problem_data.get("fn_name", None)
+    # B1 fixed-test-conditioning: SHOWN cases are surfaced as feedback; they are a
+    # DISJOINT set from inputs/outputs (which are the held-out GRADED cases the reward
+    # uses). Feedback must read ONLY from these shown_* fields — never from
+    # inputs/outputs — or the model would see cases it is graded on (leakage).
+    shown_inputs = problem_data.get("shown_inputs", [])
+    shown_outputs = problem_data.get("shown_outputs", [])
 
     max_turns = ablation_cfg.get("max_turns", 5)
     use_linear_pass_rate = ablation_cfg.get("use_linear_pass_rate", True)
@@ -350,6 +351,32 @@ async def run_single_episode(
                         f"Failed on test case:\n- Input: {inputs[0]}\n"
                         f"- Expected Output: {outputs[0]}"
                     )
+            elif feedback_type == "real_tests":
+                # Fixed-test-conditioning feedback. Executes the code against the SHOWN
+                # test cases in a single sandbox call (mirroring how the graded reward
+                # runs) and reports the executed pass rate plus the shown specification.
+                # Reads shown_inputs/shown_outputs ONLY — never the graded inputs/outputs
+                # the reward uses — so the model is never shown a case it is scored on.
+                # This execution is for feedback only; it is not added to the reward.
+                feedback_str = f"Execution Pass Rate: {pass_rate*100:.1f}%\n"
+                if shown_inputs and pass_rate < 1.0:
+                    n_show = min(3, len(shown_inputs))
+                    shown_res = await asyncio.to_thread(
+                        execution_reward,
+                        code=parsed["code"],
+                        inputs=shown_inputs[:n_show],
+                        outputs=shown_outputs[:n_show],
+                        fn_name=fn_name,
+                    )
+                    feedback_str += (
+                        f"You pass {shown_res.pass_rate*100:.0f}% of the provided real "
+                        f"test cases. Revise your code to satisfy all of them:\n"
+                    )
+                    for j in range(n_show):
+                        feedback_str += (
+                            f"- Input: {shown_inputs[j]}\n"
+                            f"  Expected Output: {shown_outputs[j]}\n"
+                        )
             else:
                 feedback_str = (
                     f"Execution Pass Rate: {pass_rate*100:.1f}%. Please revise."
