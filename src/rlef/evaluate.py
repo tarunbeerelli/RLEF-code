@@ -1,16 +1,16 @@
 """
-evaluate.py — Asynchronous Rollout Evaluator (CORRECTED)
+evaluate.py — Asynchronous rollout evaluator.
 
-Calculates pass@1 and pass@N using the locked environment physics.
-Logs macro evaluation suites to W&B and exports granular JSON locally.
+Measures pass@1 and pass@N under a matched multi-turn harness whose feedback and
+execution physics mirror training exactly, so a policy is evaluated on the same
+distribution it was trained on. Logs macro suites to W&B and exports granular
+per-problem JSON locally.
 
-FIXES vs. previous version
---------------------------
-1. execution_reward is now called WITH fn_name, so call-based problems are graded
-   correctly instead of scoring 0. (Same root bug that was in train_agent.)
-2. pass@1 is measured strictly at turn 0; pass@N over the full turn window.
-3. Greedy decoding (temperature 0) is used for a deterministic pass@1. If you
-   want pass@k with sampling, set eval temperature > 0 and n > 1 and aggregate.
+- execution_reward is called with fn_name, so call-based problems are graded via the
+  function-call harness and stdin/stdout problems via the script harness.
+- pass@1 is measured strictly at turn 0; pass@N spans the full turn window.
+- Decoding is greedy (temperature 0) for a deterministic pass@1. For sampled pass@k,
+  set eval temperature > 0 with n > 1 and aggregate.
 """
 
 import argparse
@@ -80,6 +80,34 @@ async def evaluate_single_episode(
     inputs = problem_data.get("inputs", [])
     outputs = problem_data.get("outputs", [])
     fn_name = problem_data.get("fn_name", None)
+    # B1 fixed-test-conditioning: shown_* are revealed as feedback, disjoint from the
+    # graded inputs/outputs the reward uses. Mirrors train_agent — read shown_* ONLY.
+    shown_inputs = problem_data.get("shown_inputs", [])
+    shown_outputs = problem_data.get("shown_outputs", [])
+    # The eval file is ARM-AGNOSTIC (stores raw inputs/outputs), so for the real_tests
+    # arm the shown/graded split is applied HERE, per-problem, with the SAME logic and
+    # seed as data prep — the model sees shown cases as feedback and is graded ONLY on
+    # the held-out remainder, exactly as in training. Other arms are unaffected.
+    if ablation_cfg.get("feedback_type") == "real_tests" and not shown_inputs:
+        _ns = int(ablation_cfg.get("n_shown_tests", 5))
+        _mg = int(ablation_cfg.get("min_graded_tests", 2))
+        if inputs and outputs and len(inputs) >= _ns + _mg:
+            import random as _r
+
+            _r.seed(1234)  # SAME seed as prepare_openrlhf_data._split_cases
+            _n = len(inputs)
+            _idx = list(range(_n))
+            _shown = {_idx[0], _idx[-1]}
+            _pool = [i for i in _idx if i not in _shown]
+            _r.shuffle(_pool)
+            while len(_shown) < _ns and _pool:
+                _shown.add(_pool.pop())
+            _si = sorted(_shown)
+            _gi = [i for i in _idx if i not in _shown]
+            shown_inputs = [inputs[i] for i in _si]
+            shown_outputs = [outputs[i] for i in _si]
+            inputs = [inputs[i] for i in _gi]  # grade on held-out only
+            outputs = [outputs[i] for i in _gi]
 
     pass_at_1 = 0
     final_pass_rate = 0.0
@@ -120,7 +148,7 @@ async def evaluate_single_episode(
             code=parsed["code"],
             inputs=inputs,
             outputs=outputs,
-            fn_name=fn_name,  # <-- the fix: grade call-based problems correctly
+            fn_name=fn_name,  # routes call-based problems to the function-call harness
         )
 
         final_pass_rate = exec_result.pass_rate
@@ -135,9 +163,9 @@ async def evaluate_single_episode(
         if final_pass_rate == 1.0:
             break
 
-        # Feedback string MUST mirror train_agent.py exactly, or arms are
-        # evaluated off-distribution (esp. consolidated, which was previously
-        # collapsed into the generic 'Please revise' branch).
+        # The feedback string mirrors train_agent exactly, so every arm is evaluated
+        # on the same feedback distribution it was trained under (in particular
+        # consolidated, which summarizes error types rather than a single case).
         if feedback_type == "none":
             feedback_str = "Execution failed. Try a different algorithmic approach."
         elif feedback_type == "consolidated":
@@ -153,6 +181,30 @@ async def evaluate_single_episode(
                     f"Failed on test case:\n- Input: {inputs[0]}\n"
                     f"- Expected Output: {outputs[0]}"
                 )
+        elif feedback_type == "real_tests":
+            # Mirrors train_agent exactly: execute against the SHOWN cases in a single
+            # call and report the executed pass rate plus the shown spec. Reads
+            # shown_* ONLY (never the graded inputs/outputs), so eval feedback matches
+            # training and never leaks a graded case.
+            feedback_str = f"Execution Pass Rate: {final_pass_rate*100:.1f}%\n"
+            if shown_inputs and final_pass_rate < 1.0:
+                n_show = min(3, len(shown_inputs))
+                shown_res = await asyncio.to_thread(
+                    execution_reward,
+                    code=parsed["code"],
+                    inputs=shown_inputs[:n_show],
+                    outputs=shown_outputs[:n_show],
+                    fn_name=fn_name,
+                )
+                feedback_str += (
+                    f"You pass {shown_res.pass_rate*100:.0f}% of the provided real "
+                    f"test cases. Revise your code to satisfy all of them:\n"
+                )
+                for j in range(n_show):
+                    feedback_str += (
+                        f"- Input: {shown_inputs[j]}\n"
+                        f"  Expected Output: {shown_outputs[j]}\n"
+                    )
         else:
             feedback_str = (
                 f"Execution Pass Rate: {final_pass_rate*100:.1f}%. Please revise."

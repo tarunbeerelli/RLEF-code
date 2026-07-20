@@ -1,23 +1,23 @@
 """
-reward.py — Core Execution Sandbox for RLEF-Code (CORRECTED)
+reward.py — Execution sandbox for RLEF-Code.
 
-Acts purely as the environment physics engine.
-Calculates raw execution pass rates and evaluates generated test validity.
-Reward shaping (step credits, multi-turn penalties) is handled upstream by train_agent.py.
+The environment's physics engine: it runs generated code against a problem's test
+cases and returns a linear execution pass rate, and it validates model-generated
+test blocks. Reward shaping (step credit, multi-turn penalties) is applied upstream
+in train_agent.py, so this module stays a pure, deterministic grader.
 
-FIXES vs. previous version
---------------------------
-1. fn_name (call-based) problems are now actually executed and compared against
-   the function's return value. Previously they scored 0 unconditionally.
-2. Output normalization: APPS `input_output.json` frequently stores each output
-   as a *list* (e.g. ["6"] or [["a","b"]]). The old `str(x)` cast turned ["6"]
-   into the literal string "['6']", which never matched. We now flatten/join
-   list-typed cases before comparison.
-3. Stdin-script problems keep working (verified): top-level and __main__-guarded
-   scripts both run under exec with __name__ == "__main__" set explicitly so the
-   guard behaves like a real `python file.py` invocation.
-4. A __main__ self-test validates the harness against known-correct solutions so
-   you can prove the executor is sane before spending GPU time.
+Design points
+-------------
+- Two harnesses. Call-based (fn_name) problems execute the target function and
+  compare its return value; stdin/stdout problems run the program per test case
+  with __name__ == "__main__" set, so a __main__-guarded script behaves as a real
+  `python file.py` invocation. Both compare token-normalized.
+- Output canonicalization. APPS input_output.json stores outputs in several shapes
+  (plain string, list of lines, nested list); entries are recursively flattened to
+  whitespace-joined tokens so comparison is shape-invariant.
+- Boot-time self-test. A __main__ self-test runs known-correct solutions (and one
+  known-wrong solution that must not pass), certifying the harness before any GPU
+  time is spent.
 """
 
 import json
@@ -189,7 +189,7 @@ def _build_stdin_harness(code: str, inputs: list[str], outputs: list[str]) -> st
 def _build_fncall_harness(code: str, fn_name: str, inputs: list, outputs: list) -> str:
     """Harness for call-based problems. Each `inputs[i]` is the argument list for
     one call; compares the function's return value (token-normalized) against
-    `outputs[i]`. This is the path that was completely missing before."""
+    `outputs[i]`."""
     return "\n".join(
         [
             "import sys, io, math, collections, itertools, functools, heapq, bisect, json",
@@ -295,7 +295,7 @@ def execution_reward(
 
 def _self_test() -> None:
     """Run known-correct solutions through the harness. All should score 1.0.
-    If any of these fail, the executor is still lying and training is pointless."""
+    If any of these fail, the harness is unsound and training would be graded on a broken signal."""
     checks = []
 
     # 1. Plain top-level stdin script
@@ -334,7 +334,7 @@ def _self_test() -> None:
         )
     )
 
-    # 4. List-typed outputs (the silent killer)
+    # 4. List-typed outputs (a shape APPS uses that must canonicalize correctly)
     checks.append(
         (
             "list_typed_output",

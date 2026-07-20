@@ -1,8 +1,10 @@
 """
 prepare_openrlhf_data.py
-Converts the APPS dataset into the flat JSONL format required by the custom agent loop.
-Dynamically injects anchors and prompt structures based on the train.yaml ablation config.
-Generates a static evaluation set if missing, reading paths directly from the config.
+
+Converts the APPS dataset into the flat JSONL format the agent loop consumes.
+Builds prompts and (where configured) test-case anchors from the train.yaml ablation
+config, applies stratified / curriculum sampling with a provably disjoint unseen/seen
+split, and generates a static arm-agnostic evaluation set when one is absent.
 """
 
 import json
@@ -177,9 +179,58 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Coder-7B-Instruct")
 
     # --- 1. GENERATE TRAINING DATA ---
+    # Run B1 (fixed_test_conditioning): instead of the model generating its own tests
+    # (the run_6 self-consistency exploit), surface REAL held-out test cases to the
+    # model as feedback. To avoid leakage, each problem's cases are split: `shown` are
+    # revealed to the model between turns; `graded` are the held-out remainder the
+    # reward is computed on. The model is NEVER graded on a case it was shown.
+    fixed_tests = ablation_cfg.get("fixed_test_conditioning", False)
+    n_shown = int(ablation_cfg.get("n_shown_tests", 5))  # cases revealed as feedback
+    min_graded = int(ablation_cfg.get("min_graded_tests", 2))  # skip if too few remain
+    import random as _rnd
+
+    _rnd.seed(1234)  # deterministic split
+
+    def _split_cases(inputs, outputs):
+        """Return (shown_in, shown_out, graded_in, graded_out) or None if the problem
+        can't be split while leaving >= min_graded cases to grade on."""
+        n = len(inputs)
+        if n < n_shown + min_graded:
+            return None  # not enough cases to both show and grade cleanly
+        # Show front + back (edge-ish), fill the middle randomly if n_shown > 2.
+        idx = list(range(n))
+        shown_idx = {idx[0], idx[-1]}
+        pool = [i for i in idx if i not in shown_idx]
+        _rnd.shuffle(pool)
+        while len(shown_idx) < n_shown and pool:
+            shown_idx.add(pool.pop())
+        graded_idx = [i for i in idx if i not in shown_idx]
+        si = sorted(shown_idx)
+        return (
+            [inputs[i] for i in si],
+            [outputs[i] for i in si],
+            [inputs[i] for i in graded_idx],
+            [outputs[i] for i in graded_idx],
+        )
+
+    _skipped_fixed = 0
     with open(output_file, "w", encoding="utf-8") as f:
         for p in problems:
-            # 2. THE ANCHOR INJECTION (For Runs 6 & 7)
+            shown_in = shown_out = None
+            if fixed_tests:
+                split = (
+                    _split_cases(p.inputs, p.outputs)
+                    if (p.inputs and p.outputs)
+                    else None
+                )
+                if split is None:
+                    _skipped_fixed += 1
+                    continue  # drop problems that can't be split leakage-free
+                shown_in, shown_out, graded_in, graded_out = split
+            else:
+                graded_in, graded_out = p.inputs, p.outputs
+
+            # 2. THE ANCHOR INJECTION (For Runs 6 & 7; not used by B1)
             if use_edge_cases and p.inputs and p.outputs and p.fn_name:
                 anchor_text = (
                     "\n\n=== GROUND TRUTH ANCHOR ===\n"
@@ -197,16 +248,29 @@ def main():
                 messages, tokenize=False, add_generation_prompt=True
             )
 
-            # 5. Pack the row (Keep hidden tests for train_agent.py to grade locally)
+            # 5. Pack the row. `inputs`/`outputs` are the GRADED (held-out) cases the
+            # reward uses. For fixed_test_conditioning, `shown_inputs`/`shown_outputs`
+            # are the revealed cases train_agent surfaces as feedback — kept in a
+            # SEPARATE field so the reward path can never accidentally grade on them.
             row = {
                 "problem_id": p.problem_id,
                 "difficulty": p.difficulty,
                 "prompt": prompt_text,
-                "inputs": p.inputs,
-                "outputs": p.outputs,
+                "inputs": graded_in,
+                "outputs": graded_out,
                 "fn_name": p.fn_name,
             }
+            if fixed_tests:
+                row["shown_inputs"] = shown_in
+                row["shown_outputs"] = shown_out
             f.write(json.dumps(row) + "\n")
+
+    if fixed_tests:
+        print(
+            f"fixed_test_conditioning: showed up to {n_shown} cases/problem as feedback, "
+            f"graded on held-out remainder (>= {min_graded}); "
+            f"skipped {_skipped_fixed} problems with too few cases to split."
+        )
 
     print(
         f"\nSuccessfully exported {len(problems)} trajectory prompts to {output_file}"
