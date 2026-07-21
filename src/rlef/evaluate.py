@@ -306,13 +306,22 @@ async def main(baseline: bool = False):
     if baseline:
         active_lora = None  # evaluate the raw base model on the identical harness
     else:
+        # Fail loud if a checkpoint was requested but is absent: silently falling back
+        # to the base model would mislabel a base-model score as this run's result.
+        if not os.path.isdir(lora_path):
+            raise FileNotFoundError(
+                f"Eval checkpoint not found: {lora_path}. Refusing to fall back to the "
+                f"base model, which would mislabel a base score as '{cfg.get('run_name')}'. "
+                f"Verify the checkpoint path exists."
+            )
         try:
             active_lora = LoRARequest("eval_policy", 1, lora_path=lora_path)
         except Exception as e:
-            print(
-                f"Warning: could not load LoRA at {lora_path}. Evaluating base model. {e}"
-            )
-            active_lora = None
+            # The directory exists but the adapter failed to load — surface it rather
+            # than quietly evaluating the base model.
+            raise RuntimeError(
+                f"Failed to load LoRA adapter at {lora_path}: {e}"
+            ) from e
 
     semaphore = asyncio.Semaphore(50)
 
