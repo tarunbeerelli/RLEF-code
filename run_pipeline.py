@@ -127,14 +127,41 @@ RUNS = [
     # 3-turn, last_failed harness the trained runs use, so trained-vs-base is a like-
     # for-like comparison (and directly comparable to the scaled full-distribution
     # run and the all-linear-layers reach run, which share this harness).
+    # 3-turn last_failed baseline — COMPLETE (intro 14.8 / interview 2.4 / comp 0.47).
+    # {**_REEVAL_COMMON,
+    #     "name": "baseline_3turn_last_failed",
+    #     "tags": ["baseline", "last_failed", "matched_harness"],
+    #     "feedback_type": "last_failed",
+    #     "max_turns": 3,
+    #     "baseline": True},
+    # ── Single-shot baseline (untrained, 1 turn, no feedback) ─────────────────
+    # The pure zero-shot reference: base model, one attempt, no iteration. Contrasts
+    # with the 3-turn last_failed baseline above to isolate how much the multi-turn
+    # feedback loop alone contributes to the untrained model (before any training),
+    # separating "the loop helps" from "training helps".
     {
         **_REEVAL_COMMON,
-        "name": "baseline_3turn_last_failed",
-        "tags": ["baseline", "last_failed", "matched_harness"],
-        "feedback_type": "last_failed",
-        "max_turns": 3,
+        "name": "baseline_1turn_zeroshot",
+        "tags": ["baseline", "zero_shot", "single_turn"],
+        "feedback_type": "none",
+        "max_turns": 1,
         "baseline": True,
-    },  # evaluate the base model, no adapter
+    },
+    # ── Single-shot GRPO+execution run — re-eval matched to its training ──────
+    # An early run trained single-shot (max_turns 1): pure GRPO on the execution
+    # reward with no feedback loop ("give your best single attempt"). Evaluated here
+    # the same way (1 turn, no feedback), it isolates raw single-shot capability from
+    # execution-reward training — distinct from the multi-turn runs, which measure
+    # self-correction (pass@k over pass@1). This is the "no iteration, just better
+    # single-shot generation" reference point.
+    {
+        **_REEVAL_COMMON,
+        "name": "reeval_run_1_single_shot",
+        "tags": ["reeval", "single_shot", "grpo", "execution_reward"],
+        "feedback_type": "none",
+        "max_turns": 1,  # matches training: single attempt, no iteration
+        "eval_checkpoint": "./checkpoints/run_1_sparse_baseline_final",
+    },
     # ── Fixed-test-conditioning run (standalone, from base) ───────────────────
     # Conditions the policy on REAL test cases instead of model-generated ones. Data
     # prep partitions each problem's cases into a shown set (surfaced as executed
@@ -147,40 +174,29 @@ RUNS = [
     # context (statement + shown cases + revisions) reaches ~15k tokens; bs 8 x gen 8
     # at util 0.65 keeps the KV cache within budget at that length while retaining an
     # 8-wide GRPO group.
-    {
-        **_BUILD_COMMON,
-        "name": "run_B1_fixed_tests",
-        "tags": ["fixed_test_conditioning", "real_tests", "all_linear_layers"],
-        "feedback_type": "real_tests",
-        "use_edge_cases": False,
-        "fixed_test_conditioning": True,
-        "n_shown_tests": 3,
-        "min_graded_tests": 2,
-        "train_cap": 1200,
-        "curriculum_mode": "full",
-        "max_turns": 3,
-        "batch_size": 8,  # 8 x 12 = 96 concurrent, full GRPO group depth
-        "num_generations": 12,
-        "gpu_memory_utilization": 0.65,  # KV fits the common (<~12.5k) full-distribution
-        # context; long competition-problem batches are
-        # the tail and vLLM preempts (throttles) rather
-        # than OOMs if they cluster. Drop to gen 8 if
-        # preemption is frequent in the logs.
-        "lora_rank": 32,
-        "lora_alpha": 64,
-        "lora_target_modules": [
-            "q_proj",
-            "k_proj",
-            "v_proj",
-            "o_proj",
-            "gate_proj",
-            "up_proj",
-            "down_proj",
-        ],
-        "checkpoint_every": 40,
-        "write_manifest": True,
-        "manifest_path": "./data/runB1_trained_ids.json",
-    },
+    # Fixed-test-conditioning run — COMPLETE (best-KL@40: intro 17.6 / interview 4.0
+    # / comp 0.47; pass@3 22.8 / 4.0 / 0.94). Checkpoints saved. Commented out.
+    # {**_BUILD_COMMON,
+    #     "name": "run_B1_fixed_tests",
+    #     "tags": ["fixed_test_conditioning", "real_tests", "all_linear_layers"],
+    #     "feedback_type": "real_tests",
+    #     "use_edge_cases": False,
+    #     "fixed_test_conditioning": True,
+    #     "n_shown_tests": 3,
+    #     "min_graded_tests": 2,
+    #     "train_cap": 1200,
+    #     "curriculum_mode": "full",
+    #     "max_turns": 3,
+    #     "batch_size": 8,
+    #     "num_generations": 12,
+    #     "gpu_memory_utilization": 0.65,
+    #     "lora_rank": 32,
+    #     "lora_alpha": 64,
+    #     "lora_target_modules": ["q_proj", "k_proj", "v_proj", "o_proj",
+    #                             "gate_proj", "up_proj", "down_proj"],
+    #     "checkpoint_every": 40,
+    #     "write_manifest": True,
+    #     "manifest_path": "./data/runB1_trained_ids.json"},
     # ── Curriculum amplification with fixed-test-conditioning (STAGED) ────────
     # Enable after the fixed-test run above lands. Warm-starts from the scaled full-
     # distribution checkpoint and continues on hard-specialized UNSEEN problems (a
@@ -191,30 +207,53 @@ RUNS = [
     # Context-aware sizing: hard-specialized data is ALL long problems, so ~15k tokens
     # is the norm here, not the tail; bs 6 x gen 12 at util 0.65 holds the full 12-wide
     # GRPO group (which matters most on hard problems) within the KV budget at 15k.
-    # {**_BUILD_COMMON,
-    #     "name": "run_phase2_B1_curriculum",
-    #     "tags": ["curriculum", "real_tests", "attn_only", "hard_specialize"],
-    #     "feedback_type": "real_tests",
-    #     "use_edge_cases": False,
-    #     "fixed_test_conditioning": True,
-    #     "n_shown_tests": 3,
-    #     "min_graded_tests": 2,
-    #     "max_turns": 3,
-    #     "batch_size": 6,                 # 6 x 12 = 72 concurrent; hard-specialize data is
-    #                                      # ALL long-context (~15k the norm, not the tail),
-    #                                      # so this stays conservative to avoid throttling.
-    #     "num_generations": 12,
-    #     "gpu_memory_utilization": 0.65,  # KV room ~76G vs ~62G need at 15k; PyTorch ~49G
-    #     "lora_rank": 32,
-    #     "lora_alpha": 64,
-    #     "lora_target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"],  # attention-only
-    #     "train_cap": 2000,
-    #     "num_epochs": 2,
-    #     "curriculum_mode": "hard_specialize",
-    #     "replay_frac": 0.15,
-    #     "checkpoint_every": 40,
-    #     "manifest_path": "./data/run5_trained_ids.json",   # disjoint split vs phase 1
-    #     "base_model_override": "./checkpoints/run_5_proper_phase1_final"},
+    {
+        **_BUILD_COMMON,
+        "name": "run_phase2_B1_curriculum",
+        "tags": ["curriculum", "real_tests", "attn_only", "hard_specialize"],
+        "feedback_type": "real_tests",
+        "use_edge_cases": False,
+        "fixed_test_conditioning": True,
+        "n_shown_tests": 3,
+        "min_graded_tests": 2,
+        "max_turns": 3,
+        "batch_size": 6,  # 6 x 12 = 72 concurrent; hard-specialize data is
+        # ALL long-context (~15k the norm, not the tail),
+        # so this stays conservative to avoid throttling.
+        "num_generations": 12,
+        "gpu_memory_utilization": 0.65,  # KV room ~76G vs ~62G need at 15k; PyTorch ~49G
+        "lora_rank": 32,
+        "lora_alpha": 64,
+        "lora_target_modules": [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+        ],  # attention-only
+        "train_cap": 2000,
+        "num_epochs": 2,
+        "curriculum_mode": "hard_specialize",
+        "replay_frac": 0.15,
+        "checkpoint_every": 40,
+        "manifest_path": "./data/run5_trained_ids.json",  # disjoint split vs phase 1
+        "base_model_override": "./checkpoints/run_5_proper_phase1_final",
+    },
+    # Best-KL eval for the curriculum run above. The training run auto-evaluates its
+    # FINAL checkpoint; the updated checkpoint logic also archives the best-KL
+    # checkpoint (epoch_N_best_kl) when the final policy drifts. Enable this alongside
+    # the run above to evaluate both and select on held-out performance. (Adjust the
+    # epoch index to match num_epochs.)
+    {
+        **_REEVAL_COMMON,
+        "name": "reeval_phase2_B1_best_kl",
+        "tags": ["reeval", "curriculum", "real_tests", "best_kl_ckpt"],
+        "feedback_type": "real_tests",
+        "fixed_test_conditioning": True,
+        "n_shown_tests": 3,
+        "min_graded_tests": 2,
+        "max_turns": 3,
+        "eval_checkpoint": "./checkpoints/epoch_2_best_kl",
+    },
     # ── Adaptation-reach run (RUNNING SEPARATELY / kept as record) ────────────
     # Holds LoRA rank fixed and widens the adaptation surface from the four attention
     # projections to all seven linear layers, adding the MLP (gate/up/down_proj) where

@@ -833,31 +833,36 @@ async def main():
             break
 
         # --- NORMAL END-OF-EPOCH CHECKPOINT ---
-        # Even without an early-stop, the FINAL policy may have drifted well above
-        # its best-KL point (run_6's failure mode). If the current rolling_kl is
-        # meaningfully worse than the best seen, archive the BEST-KL checkpoint
-        # instead of the drifted end state. "Meaningfully worse" = >2x best KL.
-        epoch_dir = f"./checkpoints/epoch_{epoch + 1}"
+        # At end-of-epoch, always archive the FINAL policy, and — when it has drifted
+        # meaningfully above its best-KL point — additionally archive the best-KL
+        # checkpoint. Saving both lets evaluation compare them and select on held-out
+        # performance rather than assuming the end (or the least-drifted) is better;
+        # in practice either can win, so the choice is made from evidence.
+        # "Meaningfully drifted" = current rolling_kl > 2x the best seen.
+        epoch_dir = f"./checkpoints/epoch_{epoch + 1}"  # the FINAL policy
         os.makedirs(epoch_dir, exist_ok=True)
+        if os.path.exists("./checkpoint/active_lora"):
+            shutil.copytree("./checkpoint/active_lora", epoch_dir, dirs_exist_ok=True)
+            print(
+                f"Saved end-of-epoch checkpoint to {epoch_dir} (rolling_kl {rolling_kl:.4f})"
+            )
+
         drifted = (
             best_kl < float("inf")
             and rolling_kl > max(2.0 * best_kl, best_kl + 0.01)
             and os.path.exists("./checkpoint/last_good_lora")
         )
-        _end_src = (
-            "./checkpoint/last_good_lora" if drifted else "./checkpoint/active_lora"
-        )
-        if os.path.exists(_end_src):
-            shutil.copytree(_end_src, epoch_dir, dirs_exist_ok=True)
-            if drifted:
-                print(
-                    f"⚠️ End policy drifted (rolling_kl {rolling_kl:.4f} >> best {best_kl:.4f} "
-                    f"@ step {best_kl_step}). Archived BEST-KL checkpoint, not the drifted end."
-                )
-            else:
-                print(
-                    f"Saved end-of-epoch checkpoint to {epoch_dir} (rolling_kl {rolling_kl:.4f})"
-                )
+        if drifted:
+            best_kl_dir = f"./checkpoints/epoch_{epoch + 1}_best_kl"
+            os.makedirs(best_kl_dir, exist_ok=True)
+            shutil.copytree(
+                "./checkpoint/last_good_lora", best_kl_dir, dirs_exist_ok=True
+            )
+            print(
+                f"Note: final rolling_kl {rolling_kl:.4f} exceeds best {best_kl:.4f} "
+                f"@ step {best_kl_step}; also archived the best-KL checkpoint to "
+                f"{best_kl_dir} for comparison."
+            )
 
 
 if __name__ == "__main__":
