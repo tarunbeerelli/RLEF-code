@@ -122,7 +122,90 @@ _REEVAL_COMMON = {
 }
 
 RUNS = [
-    # ── MLP-only adaptation-reach run (FINAL run) ─────────────────────────────
+    # ── Baseline eval (untrained, 3-turn last_failed, matched harness) ────────
+    # Runs FIRST to establish the base-model denominator on the exact harness the
+    # trained runs use (3 turns, last_failed feedback), so trained-vs-base is a
+    # like-for-like comparison. baseline: True => no adapter, no checkpoint needed.
+    {
+        **_REEVAL_COMMON,
+        "name": "baseline_3turn_last_failed",
+        "tags": ["baseline", "last_failed", "matched_harness"],
+        "feedback_type": "last_failed",
+        "max_turns": 3,
+        "baseline": True,
+    },
+    # ── VERIFICATION RE-RUN SEQUENCE (new instance, all checkpoints lost) ─────
+    # Retrain from scratch in order A2 -> B1 -> A3 to re-verify the thesis after
+    # checkpoint loss. Each is a full training run that auto-evaluates its own
+    # _final checkpoint. No pre-built checkpoints are referenced in this sequence.
+    #
+    # ── A2: all-seven-layers adaptation-reach run ─────────────────────────────
+    # Holds LoRA rank fixed and widens the adaptation surface to all seven linear
+    # layers (attention q/k/v/o_proj + MLP gate/up/down_proj). Full distribution,
+    # last_failed feedback, 3 turns. bs 12 x gen 12 at util 0.60.
+    {
+        **_BUILD_COMMON,
+        "name": "run_A2_all_layers",
+        "tags": ["run_A2", "last_failed", "all_linear_layers", "reach_test"],
+        "feedback_type": "last_failed",
+        "use_edge_cases": False,
+        "train_cap": 1200,
+        "curriculum_mode": "full",
+        "max_turns": 3,
+        "batch_size": 12,
+        "num_generations": 12,
+        "gpu_memory_utilization": 0.60,
+        "lora_rank": 32,
+        "lora_alpha": 64,
+        "lora_target_modules": [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ],
+        "checkpoint_every": 40,
+        "write_manifest": True,
+        "manifest_path": "./data/runA2_trained_ids.json",
+    },
+    # ── B1: fixed-test-conditioning run (all seven layers, real_tests) ────────
+    # Conditions the policy on REAL held-out test cases (shown set surfaced as
+    # real_tests feedback; disjoint graded set for the reward). All seven linear
+    # layers; full distribution; 3 turns. bs 8 x gen 12 at util 0.65 for the
+    # longer real_tests contexts.
+    {
+        **_BUILD_COMMON,
+        "name": "run_B1_fixed_tests",
+        "tags": ["fixed_test_conditioning", "real_tests", "all_linear_layers"],
+        "feedback_type": "real_tests",
+        "use_edge_cases": False,
+        "fixed_test_conditioning": True,
+        "n_shown_tests": 3,
+        "min_graded_tests": 2,
+        "train_cap": 1200,
+        "curriculum_mode": "full",
+        "max_turns": 3,
+        "batch_size": 8,
+        "num_generations": 12,
+        "gpu_memory_utilization": 0.65,
+        "lora_rank": 32,
+        "lora_alpha": 64,
+        "lora_target_modules": [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ],
+        "checkpoint_every": 40,
+        "write_manifest": True,
+        "manifest_path": "./data/runB1_trained_ids.json",
+    },
+    # ── A3: MLP-only adaptation-reach run ─────────────────────────────────────
     # Mirror of the all-linear-layers adaptation-reach run, but restricts the
     # adaptation surface to the MLP/FFN block only: the three projections
     # (gate/up/down_proj) where most of the transformer's computation resides,
@@ -167,14 +250,14 @@ RUNS = [
     # with the 3-turn last_failed baseline above to isolate how much the multi-turn
     # feedback loop alone contributes to the untrained model (before any training),
     # separating "the loop helps" from "training helps".
-    {
-        **_REEVAL_COMMON,
-        "name": "baseline_1turn_zeroshot",
-        "tags": ["baseline", "zero_shot", "single_turn"],
-        "feedback_type": "none",
-        "max_turns": 1,
-        "baseline": True,
-    },
+    # DISABLED per request — run only the 3-turn baseline + A2/B1/A3.
+    # {
+    #     **_REEVAL_COMMON,
+    #     "name": "baseline_1turn_zeroshot",
+    #     "tags": ["baseline", "zero_shot", "single_turn"],
+    #     "feedback_type": "none",
+    #     "max_turns": 1,
+    #     "baseline": True},
     # ── Single-shot GRPO+execution run — re-eval matched to its training ──────
     # An early run trained single-shot (max_turns 1): pure GRPO on the execution
     # reward with no feedback loop ("give your best single attempt"). Evaluated here
@@ -182,14 +265,14 @@ RUNS = [
     # execution-reward training — distinct from the multi-turn runs, which measure
     # self-correction (pass@k over pass@1). This is the "no iteration, just better
     # single-shot generation" reference point.
-    {
-        **_REEVAL_COMMON,
-        "name": "reeval_run_1_single_shot",
-        "tags": ["reeval", "single_shot", "grpo", "execution_reward"],
-        "feedback_type": "none",
-        "max_turns": 1,  # matches training: single attempt, no iteration
-        "eval_checkpoint": "./checkpoints/run_1_sparse_baseline_final",
-    },
+    # DISABLED (checkpoint lost on new instance — ./checkpoints/run_1_sparse_baseline_final gone):
+    # {
+    #     **_REEVAL_COMMON,
+    #     "name": "reeval_run_1_single_shot",
+    #     "tags": ["reeval", "single_shot", "grpo", "execution_reward"],
+    #     "feedback_type": "none",
+    #     "max_turns": 1,  # matches training: single attempt, no iteration
+    #     "eval_checkpoint": "./checkpoints/run_1_sparse_baseline_final"},
     # ── Fixed-test-conditioning run (standalone, from base) ───────────────────
     # Conditions the policy on REAL test cases instead of model-generated ones. Data
     # prep partitions each problem's cases into a shown set (surfaced as executed
@@ -235,53 +318,42 @@ RUNS = [
     # Context-aware sizing: hard-specialized data is ALL long problems, so ~15k tokens
     # is the norm here, not the tail; bs 6 x gen 12 at util 0.65 holds the full 12-wide
     # GRPO group (which matters most on hard problems) within the KV budget at 15k.
-    {
-        **_BUILD_COMMON,
-        "name": "run_phase2_B1_curriculum",
-        "tags": ["curriculum", "real_tests", "attn_only", "hard_specialize"],
-        "feedback_type": "real_tests",
-        "use_edge_cases": False,
-        "fixed_test_conditioning": True,
-        "n_shown_tests": 3,
-        "min_graded_tests": 2,
-        "max_turns": 3,
-        "batch_size": 6,  # 6 x 12 = 72 concurrent; hard-specialize data is
-        # ALL long-context (~15k the norm, not the tail),
-        # so this stays conservative to avoid throttling.
-        "num_generations": 12,
-        "gpu_memory_utilization": 0.65,  # KV room ~76G vs ~62G need at 15k; PyTorch ~49G
-        "lora_rank": 32,
-        "lora_alpha": 64,
-        "lora_target_modules": [
-            "q_proj",
-            "k_proj",
-            "v_proj",
-            "o_proj",
-        ],  # attention-only
-        "train_cap": 2000,
-        "num_epochs": 2,
-        "curriculum_mode": "hard_specialize",
-        "replay_frac": 0.15,
-        "checkpoint_every": 40,
-        "manifest_path": "./data/run5_trained_ids.json",  # disjoint split vs phase 1
-        "base_model_override": "./checkpoints/run_5_proper_phase1_final",
-    },
-    # Best-KL eval for the curriculum run above. The training run auto-evaluates its
-    # FINAL checkpoint; the updated checkpoint logic also archives the best-KL
-    # checkpoint (epoch_N_best_kl) when the final policy drifts. Enable this alongside
-    # the run above to evaluate both and select on held-out performance. (Adjust the
-    # epoch index to match num_epochs.)
-    {
-        **_REEVAL_COMMON,
-        "name": "reeval_phase2_B1_best_kl",
-        "tags": ["reeval", "curriculum", "real_tests", "best_kl_ckpt"],
-        "feedback_type": "real_tests",
-        "fixed_test_conditioning": True,
-        "n_shown_tests": 3,
-        "min_graded_tests": 2,
-        "max_turns": 3,
-        "eval_checkpoint": "./checkpoints/epoch_2_best_kl",
-    },
+    # DISABLED (new instance): warm-starts from ./checkpoints/run_5_proper_phase1_final,
+    # which was lost. Re-enable only after a phase-1 checkpoint exists again.
+    # {
+    #     **_BUILD_COMMON,
+    #     "name": "run_phase2_B1_curriculum",
+    #     "tags": ["curriculum", "real_tests", "attn_only", "hard_specialize"],
+    #     "feedback_type": "real_tests",
+    #     "use_edge_cases": False,
+    #     "fixed_test_conditioning": True,
+    #     "n_shown_tests": 3,
+    #     "min_graded_tests": 2,
+    #     "max_turns": 3,
+    #     "batch_size": 6,
+    #     "num_generations": 12,
+    #     "gpu_memory_utilization": 0.65,
+    #     "lora_rank": 32,
+    #     "lora_alpha": 64,
+    #     "lora_target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"],
+    #     "train_cap": 2000,
+    #     "num_epochs": 2,
+    #     "curriculum_mode": "hard_specialize",
+    #     "replay_frac": 0.15,
+    #     "checkpoint_every": 40,
+    #     "manifest_path": "./data/run5_trained_ids.json",
+    #     "base_model_override": "./checkpoints/run_5_proper_phase1_final"},
+    # DISABLED (new instance): points at ./checkpoints/epoch_2_best_kl, which was lost.
+    # {
+    #     **_REEVAL_COMMON,
+    #     "name": "reeval_phase2_B1_best_kl",
+    #     "tags": ["reeval", "curriculum", "real_tests", "best_kl_ckpt"],
+    #     "feedback_type": "real_tests",
+    #     "fixed_test_conditioning": True,
+    #     "n_shown_tests": 3,
+    #     "min_graded_tests": 2,
+    #     "max_turns": 3,
+    #     "eval_checkpoint": "./checkpoints/epoch_2_best_kl"},
     # ── Adaptation-reach run (RUNNING SEPARATELY / kept as record) ────────────
     # Holds LoRA rank fixed and widens the adaptation surface from the four attention
     # projections to all seven linear layers, adding the MLP (gate/up/down_proj) where
