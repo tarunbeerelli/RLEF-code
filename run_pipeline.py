@@ -122,6 +122,19 @@ _REEVAL_COMMON = {
 }
 
 RUNS = [
+    # ── Re-eval: MLP-only _final on the corrected eval set ────────────────────
+    # eval_only re-evaluation of the already-trained MLP-only checkpoint, run
+    # FIRST on the corrected apps_eval.jsonl (the auto-built default from the
+    # fresh instance was replaced). Matches how it was trained: last_failed
+    # feedback, 3 turns. No data-prep-train, no archival — just a clean eval.
+    {
+        **_REEVAL_COMMON,
+        "name": "reeval_run_A3_mlp_only",
+        "tags": ["reeval", "run_A3", "last_failed", "mlp_only"],
+        "feedback_type": "last_failed",
+        "max_turns": 3,
+        "eval_checkpoint": "./checkpoints/run_A3_mlp_only_final",
+    },
     # ── MLP-only adaptation-reach run (FINAL run) ─────────────────────────────
     # Mirror of the all-linear-layers adaptation-reach run, but restricts the
     # adaptation surface to the MLP/FFN block only: the three projections
