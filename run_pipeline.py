@@ -122,6 +122,34 @@ _REEVAL_COMMON = {
 }
 
 RUNS = [
+    # ── MLP-only adaptation-reach run (FINAL run) ─────────────────────────────
+    # Mirror of the all-linear-layers adaptation-reach run, but restricts the
+    # adaptation surface to the MLP/FFN block only: the three projections
+    # (gate/up/down_proj) where most of the transformer's computation resides,
+    # with the four attention projections (q/k/v/o_proj) removed. Otherwise
+    # identical to that run (full distribution, last_failed feedback, 3 turns),
+    # so MLP-only vs attention-only vs all-seven is the single variable across
+    # the reach comparison. Trains, archives its best-existing epoch to _final,
+    # then auto-evaluates that checkpoint via the built-in loop.
+    {
+        **_BUILD_COMMON,
+        "name": "run_A3_mlp_only",
+        "tags": ["run_A3", "last_failed", "mlp_only", "reach_test"],
+        "feedback_type": "last_failed",
+        "use_edge_cases": False,
+        "train_cap": 1200,
+        "curriculum_mode": "full",
+        "max_turns": 3,
+        "batch_size": 12,
+        "num_generations": 12,
+        "gpu_memory_utilization": 0.60,
+        "lora_rank": 32,
+        "lora_alpha": 64,
+        "lora_target_modules": ["gate_proj", "up_proj", "down_proj"],
+        "checkpoint_every": 40,
+        "write_manifest": True,
+        "manifest_path": "./data/runA3_trained_ids.json",
+    },
     # ── Baseline evaluation (untrained model, matched harness) ────────────────
     # Establishes the denominator for the fixed-test-conditioning study on the same
     # 3-turn, last_failed harness the trained runs use, so trained-vs-base is a like-
