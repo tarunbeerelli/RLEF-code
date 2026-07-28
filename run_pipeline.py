@@ -122,21 +122,41 @@ _REEVAL_COMMON = {
 }
 
 RUNS = [
-    # ══ MANIFEST-GEN QUEUE ════════════════════════════════════════════════════
-    # run5_trained_ids.json was lost. Since the problem set is identical across
-    # runs, run A3 FIRST and ALONE to regenerate the trained-ids manifest — A3
-    # writes directly to ./data/run5_trained_ids.json (no rename needed), which
-    # phase2's hard_specialize split then reads as its disjoint exclusion set.
-    # The three evals and phase2 below stay commented until the manifest exists.
+    # ══ QUEUE: run_5 (phase-1) -> phase2 curriculum ═══════════════════════════
+    # run_5 trains first (attention-only phase-1, full dist), producing both
+    # ./checkpoints/run_5_proper_phase1_final and ./data/run5_trained_ids.json.
+    # phase2 then warm-starts from that checkpoint and uses that manifest as its
+    # disjoint hard_specialize split.
     #
-    # ── A3: MLP-only adaptation-reach run (ACTIVE — generates the manifest) ────
-    # MLP/FFN block only (gate/up/down_proj); attention projections removed.
-    # Full distribution, last_failed, 3 turns. Trains + auto-evals its _final.
-    # write_manifest -> ./data/run5_trained_ids.json (reused by phase2).
+    # ── DISABLED (done): A3 MLP-only run — writes its OWN manifest ─────────────
+    # A3 trains a different question set, so its manifest is runA3_trained_ids.json
+    # and is NOT reused by phase2.
+    # {
+    #     **_BUILD_COMMON,
+    #     "name": "run_A3_mlp_only",
+    #     "tags": ["run_A3", "last_failed", "mlp_only", "reach_test"],
+    #     "feedback_type": "last_failed",
+    #     "use_edge_cases": False,
+    #     "train_cap": 1200,
+    #     "curriculum_mode": "full",
+    #     "max_turns": 3,
+    #     "batch_size": 12,
+    #     "num_generations": 12,
+    #     "gpu_memory_utilization": 0.60,
+    #     "lora_rank": 32,
+    #     "lora_alpha": 64,
+    #     "lora_target_modules": ["gate_proj", "up_proj", "down_proj"],
+    #     "checkpoint_every": 40,
+    #     "write_manifest": True,
+    #     "manifest_path": "./data/runA3_trained_ids.json"},
+    # ── run_5: phase-1 full-distribution run (ACTIVE) ─────────────────────────
+    # Attention-only (q/k/v/o_proj), last_failed, 3 turns, full distribution.
+    # bs 12 x gen 12 at util 0.60. Produces the phase-1 checkpoint and the
+    # trained-ids manifest that phase2 consumes.
     {
         **_BUILD_COMMON,
-        "name": "run_A3_mlp_only",
-        "tags": ["run_A3", "last_failed", "mlp_only", "reach_test"],
+        "name": "run_5_proper_phase1",
+        "tags": ["run_5", "phase1", "last_failed", "attn_only", "full_dist"],
         "feedback_type": "last_failed",
         "use_edge_cases": False,
         "train_cap": 1200,
@@ -147,7 +167,7 @@ RUNS = [
         "gpu_memory_utilization": 0.60,
         "lora_rank": 32,
         "lora_alpha": 64,
-        "lora_target_modules": ["gate_proj", "up_proj", "down_proj"],
+        "lora_target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"],
         "checkpoint_every": 40,
         "write_manifest": True,
         "manifest_path": "./data/run5_trained_ids.json",
