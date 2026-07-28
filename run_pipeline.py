@@ -122,52 +122,62 @@ _REEVAL_COMMON = {
 }
 
 RUNS = [
-    # ══ CONSOLIDATED QUEUE (uniform eval set / salvaged instance) ═════════════
-    # Exactly five entries, in order:
-    #   1. baseline_1turn_zeroshot   (untrained, 1 turn, no feedback)
-    #   2. reeval_run_1_single_shot  (scores run_1_sparse_baseline_final)
-    #   3. reeval_run_5_phase1       (scores run_5_proper_phase1_final)
-    #   4. run_phase2_B1_curriculum  (trains, warm-started from run_5)
-    #   5. run_A3_mlp_only           (trains, MLP-only)
-    # All other blocks below are disabled.
+    # ══ MANIFEST-GEN QUEUE ════════════════════════════════════════════════════
+    # run5_trained_ids.json was lost. Since the problem set is identical across
+    # runs, run A3 FIRST and ALONE to regenerate the trained-ids manifest — A3
+    # writes directly to ./data/run5_trained_ids.json (no rename needed), which
+    # phase2's hard_specialize split then reads as its disjoint exclusion set.
+    # The three evals and phase2 below stay commented until the manifest exists.
     #
-    # ── 1. Single-shot baseline (untrained, 1 turn, no feedback) ──────────────
-    # Pure zero-shot reference: base model, one attempt, no iteration.
+    # ── A3: MLP-only adaptation-reach run (ACTIVE — generates the manifest) ────
+    # MLP/FFN block only (gate/up/down_proj); attention projections removed.
+    # Full distribution, last_failed, 3 turns. Trains + auto-evals its _final.
+    # write_manifest -> ./data/run5_trained_ids.json (reused by phase2).
     {
-        **_REEVAL_COMMON,
-        "name": "baseline_1turn_zeroshot",
-        "tags": ["baseline", "zero_shot", "single_turn"],
-        "feedback_type": "none",
-        "max_turns": 1,
-        "baseline": True,
-    },
-    # ── 2. run_1 re-eval — single-shot GRPO+execution, matched harness ────────
-    # Scores the trained single-shot checkpoint the same way it was trained
-    # (1 turn, no feedback): isolates raw single-shot capability.
-    {
-        **_REEVAL_COMMON,
-        "name": "reeval_run_1_single_shot",
-        "tags": ["reeval", "single_shot", "grpo", "execution_reward"],
-        "feedback_type": "none",
-        "max_turns": 1,
-        "eval_checkpoint": "./checkpoints/run_1_sparse_baseline_final",
-    },
-    # ── 3. run_5 re-eval — phase-1 full-distribution checkpoint ───────────────
-    # Scores run_5_proper_phase1_final on the phase-1 training harness
-    # (last_failed, 3 turns). eval_only: no training, no archival.
-    {
-        **_REEVAL_COMMON,
-        "name": "reeval_run_5_phase1",
-        "tags": ["reeval", "run_5", "phase1", "last_failed"],
+        **_BUILD_COMMON,
+        "name": "run_A3_mlp_only",
+        "tags": ["run_A3", "last_failed", "mlp_only", "reach_test"],
         "feedback_type": "last_failed",
+        "use_edge_cases": False,
+        "train_cap": 1200,
+        "curriculum_mode": "full",
         "max_turns": 3,
-        "eval_checkpoint": "./checkpoints/run_5_proper_phase1_final",
+        "batch_size": 12,
+        "num_generations": 12,
+        "gpu_memory_utilization": 0.60,
+        "lora_rank": 32,
+        "lora_alpha": 64,
+        "lora_target_modules": ["gate_proj", "up_proj", "down_proj"],
+        "checkpoint_every": 40,
+        "write_manifest": True,
+        "manifest_path": "./data/run5_trained_ids.json",
     },
-    # ── 4. phase2_B1 curriculum — warm-started from run_5 ─────────────────────
-    # Continues from the phase-1 checkpoint on hard-specialized UNSEEN problems
-    # (disjoint via run5_trained_ids.json manifest) with real_tests feedback,
-    # attention-only. Context-aware sizing: hard-specialize data is all long
-    # problems (~15k norm), so bs 6 x gen 12 at util 0.65 holds the 12-wide group.
+    # ══ DISABLED until manifest exists — re-enable in this order after A3 ══════
+    # ── 1. Single-shot baseline (untrained, 1 turn, no feedback) ──────────────
+    # {
+    #     **_REEVAL_COMMON,
+    #     "name": "baseline_1turn_zeroshot",
+    #     "tags": ["baseline", "zero_shot", "single_turn"],
+    #     "feedback_type": "none",
+    #     "max_turns": 1,
+    #     "baseline": True},
+    # ── 2. run_1 re-eval — single-shot GRPO+execution, matched harness ────────
+    # {
+    #     **_REEVAL_COMMON,
+    #     "name": "reeval_run_1_single_shot",
+    #     "tags": ["reeval", "single_shot", "grpo", "execution_reward"],
+    #     "feedback_type": "none",
+    #     "max_turns": 1,
+    #     "eval_checkpoint": "./checkpoints/run_1_sparse_baseline_final"},
+    # ── 3. run_5 re-eval — phase-1 full-distribution checkpoint ───────────────
+    # {
+    #     **_REEVAL_COMMON,
+    #     "name": "reeval_run_5_phase1",
+    #     "tags": ["reeval", "run_5", "phase1", "last_failed"],
+    #     "feedback_type": "last_failed",
+    #     "max_turns": 3,
+    #     "eval_checkpoint": "./checkpoints/run_5_proper_phase1_final"},
+    # ── 4. phase2_B1 curriculum — warm-started from run_5 (reads the manifest) ─
     {
         **_BUILD_COMMON,
         "name": "run_phase2_B1_curriculum",
@@ -191,28 +201,6 @@ RUNS = [
         "checkpoint_every": 40,
         "manifest_path": "./data/run5_trained_ids.json",
         "base_model_override": "./checkpoints/run_5_proper_phase1_final",
-    },
-    # ── 5. A3: MLP-only adaptation-reach run ──────────────────────────────────
-    # MLP/FFN block only (gate/up/down_proj); attention projections removed.
-    # Full distribution, last_failed, 3 turns. Trains + auto-evals its _final.
-    {
-        **_BUILD_COMMON,
-        "name": "run_A3_mlp_only",
-        "tags": ["run_A3", "last_failed", "mlp_only", "reach_test"],
-        "feedback_type": "last_failed",
-        "use_edge_cases": False,
-        "train_cap": 1200,
-        "curriculum_mode": "full",
-        "max_turns": 3,
-        "batch_size": 12,
-        "num_generations": 12,
-        "gpu_memory_utilization": 0.60,
-        "lora_rank": 32,
-        "lora_alpha": 64,
-        "lora_target_modules": ["gate_proj", "up_proj", "down_proj"],
-        "checkpoint_every": 40,
-        "write_manifest": True,
-        "manifest_path": "./data/runA3_trained_ids.json",
     },
     # ══ DISABLED BELOW — not part of the consolidated queue ═══════════════════
     # ── DISABLED: 3-turn last_failed baseline ─────────────────────────────────
