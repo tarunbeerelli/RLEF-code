@@ -149,21 +149,16 @@ RUNS = [
     #     "checkpoint_every": 40,
     #     "write_manifest": True,
     #     "manifest_path": "./data/runA3_trained_ids.json"},
-    # ══ QUEUE: B2 (all-proj) -> B3 (MLP-only), real fixed-tests ═══════════════
-    # Fixed-test-conditioning comparison on identical settings (B1 base), varying
-    # only the LoRA adaptation surface: B2 = all seven linear layers, B3 = MLP-only.
-    # Both at bs 12 x gen 12. Each trains + auto-evals its own _final checkpoint.
+    # ══ QUEUE: B1 attn-only, real fixed-tests ═════════════════════════════════
+    # Fills the attention-only cell of the fixed-test layer comparison
+    # (B2 = all-proj, B3 = MLP-only, both done). Same B1 fixed-test config,
+    # bs 12 x gen 12, restricted to the four attention projections.
     #
-    # ── B2: all-seven-layers, real fixed-tests (ACTIVE) ───────────────────────
+    # ── B1: attention-only, real fixed-tests (ACTIVE) ─────────────────────────
     {
         **_BUILD_COMMON,
-        "name": "run_B2_fixed_tests_all_layers",
-        "tags": [
-            "fixed_test_conditioning",
-            "real_tests",
-            "all_linear_layers",
-            "run_B2",
-        ],
+        "name": "run_B1_fixed_tests_attn_only",
+        "tags": ["fixed_test_conditioning", "real_tests", "attn_only", "run_B1"],
         "feedback_type": "real_tests",
         "use_edge_cases": False,
         "fixed_test_conditioning": True,
@@ -177,42 +172,56 @@ RUNS = [
         "gpu_memory_utilization": 0.65,
         "lora_rank": 32,
         "lora_alpha": 64,
-        "lora_target_modules": [
-            "q_proj",
-            "k_proj",
-            "v_proj",
-            "o_proj",
-            "gate_proj",
-            "up_proj",
-            "down_proj",
-        ],
+        "lora_target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"],
         "checkpoint_every": 40,
         "write_manifest": True,
-        "manifest_path": "./data/runB2_trained_ids.json",
+        "manifest_path": "./data/runB1_attn_trained_ids.json",
     },
-    # ── B3: MLP-only, real fixed-tests (ACTIVE) ───────────────────────────────
-    {
-        **_BUILD_COMMON,
-        "name": "run_B3_fixed_tests_mlp_only",
-        "tags": ["fixed_test_conditioning", "real_tests", "mlp_only", "run_B3"],
-        "feedback_type": "real_tests",
-        "use_edge_cases": False,
-        "fixed_test_conditioning": True,
-        "n_shown_tests": 3,
-        "min_graded_tests": 2,
-        "train_cap": 1200,
-        "curriculum_mode": "full",
-        "max_turns": 3,
-        "batch_size": 12,
-        "num_generations": 12,
-        "gpu_memory_utilization": 0.65,
-        "lora_rank": 32,
-        "lora_alpha": 64,
-        "lora_target_modules": ["gate_proj", "up_proj", "down_proj"],
-        "checkpoint_every": 40,
-        "write_manifest": True,
-        "manifest_path": "./data/runB3_trained_ids.json",
-    },
+    # ══ DONE / DISABLED below ═════════════════════════════════════════════════
+    # ── DISABLED (done): B2 all-seven-layers, real fixed-tests ────────────────
+    # {
+    #     **_BUILD_COMMON,
+    #     "name": "run_B2_fixed_tests_all_layers",
+    #     "tags": ["fixed_test_conditioning", "real_tests", "all_linear_layers", "run_B2"],
+    #     "feedback_type": "real_tests",
+    #     "use_edge_cases": False,
+    #     "fixed_test_conditioning": True,
+    #     "n_shown_tests": 3,
+    #     "min_graded_tests": 2,
+    #     "train_cap": 1200,
+    #     "curriculum_mode": "full",
+    #     "max_turns": 3,
+    #     "batch_size": 12,
+    #     "num_generations": 12,
+    #     "gpu_memory_utilization": 0.65,
+    #     "lora_rank": 32,
+    #     "lora_alpha": 64,
+    #     "lora_target_modules": ["q_proj","k_proj","v_proj","o_proj","gate_proj","up_proj","down_proj"],
+    #     "checkpoint_every": 40,
+    #     "write_manifest": True,
+    #     "manifest_path": "./data/runB2_trained_ids.json"},
+    # ── DISABLED (done): B3 MLP-only, real fixed-tests ────────────────────────
+    # {
+    #     **_BUILD_COMMON,
+    #     "name": "run_B3_fixed_tests_mlp_only",
+    #     "tags": ["fixed_test_conditioning", "real_tests", "mlp_only", "run_B3"],
+    #     "feedback_type": "real_tests",
+    #     "use_edge_cases": False,
+    #     "fixed_test_conditioning": True,
+    #     "n_shown_tests": 3,
+    #     "min_graded_tests": 2,
+    #     "train_cap": 1200,
+    #     "curriculum_mode": "full",
+    #     "max_turns": 3,
+    #     "batch_size": 12,
+    #     "num_generations": 12,
+    #     "gpu_memory_utilization": 0.65,
+    #     "lora_rank": 32,
+    #     "lora_alpha": 64,
+    #     "lora_target_modules": ["gate_proj", "up_proj", "down_proj"],
+    #     "checkpoint_every": 40,
+    #     "write_manifest": True,
+    #     "manifest_path": "./data/runB3_trained_ids.json"},
     # ══ DONE / DISABLED below ═════════════════════════════════════════════════
     # ── DISABLED (done): run_5 phase-1 full-distribution run ──────────────────
     # {
