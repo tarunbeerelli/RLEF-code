@@ -156,26 +156,25 @@ RUNS = [
     #   A5 = MLP-only at rank 11 / alpha 22 (low-capacity MLP)
     # Each trains + auto-evals its own _final checkpoint.
     #
-    # ── A4: attention-only, rank 96 / alpha 192 (ACTIVE) ──────────────────────
-    {
-        **_BUILD_COMMON,
-        "name": "run_A4_attn_rank96",
-        "tags": ["run_A4", "last_failed", "attn_only", "rank96", "reach_test"],
-        "feedback_type": "last_failed",
-        "use_edge_cases": False,
-        "train_cap": 1200,
-        "curriculum_mode": "full",
-        "max_turns": 3,
-        "batch_size": 12,
-        "num_generations": 12,
-        "gpu_memory_utilization": 0.60,
-        "lora_rank": 96,
-        "lora_alpha": 192,
-        "lora_target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"],
-        "checkpoint_every": 40,
-        "write_manifest": True,
-        "manifest_path": "./data/runA4_trained_ids.json",
-    },
+    # ── A4: attention-only, rank 96 / alpha 192 (RUNNING on other instance) ───
+    # {
+    #     **_BUILD_COMMON,
+    #     "name": "run_A4_attn_rank96",
+    #     "tags": ["run_A4", "last_failed", "attn_only", "rank96", "reach_test"],
+    #     "feedback_type": "last_failed",
+    #     "use_edge_cases": False,
+    #     "train_cap": 1200,
+    #     "curriculum_mode": "full",
+    #     "max_turns": 3,
+    #     "batch_size": 12,
+    #     "num_generations": 12,
+    #     "gpu_memory_utilization": 0.60,
+    #     "lora_rank": 96,
+    #     "lora_alpha": 192,
+    #     "lora_target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"],
+    #     "checkpoint_every": 40,
+    #     "write_manifest": True,
+    #     "manifest_path": "./data/runA4_trained_ids.json"},
     # ── A5: MLP-only, rank 11 / alpha 22 (ACTIVE) ─────────────────────────────
     {
         **_BUILD_COMMON,
