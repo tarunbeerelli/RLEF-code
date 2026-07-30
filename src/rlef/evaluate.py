@@ -279,12 +279,20 @@ async def main(baseline: bool = False):
         job_type="evaluation",
     )
 
+    def _vllm_max_lora_rank(r):
+        for allowed in (8, 16, 32, 64, 128, 256):
+            if allowed >= r:
+                return allowed
+        raise ValueError(f"lora_rank {r} exceeds vLLM max (256)")
+
     print("Initializing vLLM Engine...")
     engine_args = AsyncEngineArgs(
         model="Qwen/Qwen2.5-Coder-7B-Instruct",
         enable_prefix_caching=True,
         enable_lora=True,
-        max_lora_rank=cfg.get("lora_rank", 16),  # MUST match the trained adapter's rank
+        max_lora_rank=_vllm_max_lora_rank(
+            cfg.get("lora_rank", 16)
+        ),  # MUST match the trained adapter's rank
         gpu_memory_utilization=cfg.get("eval_gpu_memory_utilization", 0.60),
         max_model_len=cfg.get(
             "max_model_len", 16384
