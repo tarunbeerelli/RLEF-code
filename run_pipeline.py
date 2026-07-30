@@ -175,26 +175,36 @@ RUNS = [
     #     "checkpoint_every": 40,
     #     "write_manifest": True,
     #     "manifest_path": "./data/runA4_trained_ids.json"},
-    # ── A5: MLP-only, rank 11 / alpha 22 (ACTIVE) ─────────────────────────────
+    # ── Baseline: 3-turn last_failed, untrained (ACTIVE) ──────────────────────
+    # Untrained base model on the matched harness (last_failed, 3 turns), the
+    # denominator for the trained runs. baseline: True => no adapter/checkpoint.
     {
-        **_BUILD_COMMON,
-        "name": "run_A5_mlp_rank11",
-        "tags": ["run_A5", "last_failed", "mlp_only", "rank11", "reach_test"],
+        **_REEVAL_COMMON,
+        "name": "baseline_3turn_last_failed",
+        "tags": ["baseline", "last_failed", "matched_harness"],
         "feedback_type": "last_failed",
-        "use_edge_cases": False,
-        "train_cap": 1200,
-        "curriculum_mode": "full",
         "max_turns": 3,
-        "batch_size": 12,
-        "num_generations": 12,
-        "gpu_memory_utilization": 0.60,
-        "lora_rank": 11,
-        "lora_alpha": 22,
-        "lora_target_modules": ["gate_proj", "up_proj", "down_proj"],
-        "checkpoint_every": 40,
-        "write_manifest": True,
-        "manifest_path": "./data/runA5_trained_ids.json",
+        "baseline": True,
     },
+    # ── DISABLED (done): A5 MLP-only, rank 11 / alpha 22 ──────────────────────
+    # {
+    #     **_BUILD_COMMON,
+    #     "name": "run_A5_mlp_rank11",
+    #     "tags": ["run_A5", "last_failed", "mlp_only", "rank11", "reach_test"],
+    #     "feedback_type": "last_failed",
+    #     "use_edge_cases": False,
+    #     "train_cap": 1200,
+    #     "curriculum_mode": "full",
+    #     "max_turns": 3,
+    #     "batch_size": 12,
+    #     "num_generations": 12,
+    #     "gpu_memory_utilization": 0.60,
+    #     "lora_rank": 11,
+    #     "lora_alpha": 22,
+    #     "lora_target_modules": ["gate_proj", "up_proj", "down_proj"],
+    #     "checkpoint_every": 40,
+    #     "write_manifest": True,
+    #     "manifest_path": "./data/runA5_trained_ids.json"},
     # ══ DONE / DISABLED below ═════════════════════════════════════════════════
     # ── DISABLED (done): B1 attention-only, real fixed-tests ──────────────────
     # {
