@@ -62,6 +62,14 @@ from vllm.lora.request import LoRARequest  # noqa: E402
 with open("configs/train.yaml", "r") as f:
     cfg = yaml.safe_load(f)
 
+
+def _vllm_max_lora_rank(r):
+    for allowed in (8, 16, 32, 64, 128, 256):
+        if allowed >= r:
+            return allowed
+    raise ValueError(f"lora_rank {r} exceeds vLLM max (256)")
+
+
 MODEL_NAME = "Qwen/Qwen2.5-Coder-7B-Instruct"
 
 print("Initializing vLLM Engine...")
@@ -69,8 +77,8 @@ engine_args = AsyncEngineArgs(
     model=MODEL_NAME,
     enable_prefix_caching=True,
     enable_lora=True,
-    max_lora_rank=cfg.get(
-        "lora_rank", 16
+    max_lora_rank=_vllm_max_lora_rank(
+        cfg.get("lora_rank", 16)
     ),  # MUST match LoraConfig rank or vLLM rejects the adapter
     gpu_memory_utilization=cfg.get(
         "gpu_memory_utilization", 0.42
