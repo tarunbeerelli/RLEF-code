@@ -149,34 +149,76 @@ RUNS = [
     #     "checkpoint_every": 40,
     #     "write_manifest": True,
     #     "manifest_path": "./data/runA3_trained_ids.json"},
-    # ══ QUEUE: B1 attn-only, real fixed-tests ═════════════════════════════════
-    # Fills the attention-only cell of the fixed-test layer comparison
-    # (B2 = all-proj, B3 = MLP-only, both done). Same B1 fixed-test config,
-    # bs 12 x gen 12, restricted to the four attention projections.
+    # ══ QUEUE: A4 (attn-only, rank 96) -> A5 (MLP-only, rank 11) ══════════════
+    # A-series specs (last_failed, full dist, 3 turns, cap 1200, bs 12 x gen 12
+    # at util 0.60), varying LoRA capacity + surface to make the rank point:
+    #   A4 = attention-only at rank 96 / alpha 192 (high-capacity attention)
+    #   A5 = MLP-only at rank 11 / alpha 22 (low-capacity MLP)
+    # Each trains + auto-evals its own _final checkpoint.
     #
-    # ── B1: attention-only, real fixed-tests (ACTIVE) ─────────────────────────
+    # ── A4: attention-only, rank 96 / alpha 192 (ACTIVE) ──────────────────────
     {
         **_BUILD_COMMON,
-        "name": "run_B1_fixed_tests_attn_only",
-        "tags": ["fixed_test_conditioning", "real_tests", "attn_only", "run_B1"],
-        "feedback_type": "real_tests",
+        "name": "run_A4_attn_rank96",
+        "tags": ["run_A4", "last_failed", "attn_only", "rank96", "reach_test"],
+        "feedback_type": "last_failed",
         "use_edge_cases": False,
-        "fixed_test_conditioning": True,
-        "n_shown_tests": 3,
-        "min_graded_tests": 2,
         "train_cap": 1200,
         "curriculum_mode": "full",
         "max_turns": 3,
         "batch_size": 12,
         "num_generations": 12,
-        "gpu_memory_utilization": 0.65,
-        "lora_rank": 32,
-        "lora_alpha": 64,
+        "gpu_memory_utilization": 0.60,
+        "lora_rank": 96,
+        "lora_alpha": 192,
         "lora_target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"],
         "checkpoint_every": 40,
         "write_manifest": True,
-        "manifest_path": "./data/runB1_attn_trained_ids.json",
+        "manifest_path": "./data/runA4_trained_ids.json",
     },
+    # ── A5: MLP-only, rank 11 / alpha 22 (ACTIVE) ─────────────────────────────
+    {
+        **_BUILD_COMMON,
+        "name": "run_A5_mlp_rank11",
+        "tags": ["run_A5", "last_failed", "mlp_only", "rank11", "reach_test"],
+        "feedback_type": "last_failed",
+        "use_edge_cases": False,
+        "train_cap": 1200,
+        "curriculum_mode": "full",
+        "max_turns": 3,
+        "batch_size": 12,
+        "num_generations": 12,
+        "gpu_memory_utilization": 0.60,
+        "lora_rank": 11,
+        "lora_alpha": 22,
+        "lora_target_modules": ["gate_proj", "up_proj", "down_proj"],
+        "checkpoint_every": 40,
+        "write_manifest": True,
+        "manifest_path": "./data/runA5_trained_ids.json",
+    },
+    # ══ DONE / DISABLED below ═════════════════════════════════════════════════
+    # ── DISABLED (done): B1 attention-only, real fixed-tests ──────────────────
+    # {
+    #     **_BUILD_COMMON,
+    #     "name": "run_B1_fixed_tests_attn_only",
+    #     "tags": ["fixed_test_conditioning", "real_tests", "attn_only", "run_B1"],
+    #     "feedback_type": "real_tests",
+    #     "use_edge_cases": False,
+    #     "fixed_test_conditioning": True,
+    #     "n_shown_tests": 3,
+    #     "min_graded_tests": 2,
+    #     "train_cap": 1200,
+    #     "curriculum_mode": "full",
+    #     "max_turns": 3,
+    #     "batch_size": 12,
+    #     "num_generations": 12,
+    #     "gpu_memory_utilization": 0.65,
+    #     "lora_rank": 32,
+    #     "lora_alpha": 64,
+    #     "lora_target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"],
+    #     "checkpoint_every": 40,
+    #     "write_manifest": True,
+    #     "manifest_path": "./data/runB1_attn_trained_ids.json"},
     # ══ DONE / DISABLED below ═════════════════════════════════════════════════
     # ── DISABLED (done): B2 all-seven-layers, real fixed-tests ────────────────
     # {

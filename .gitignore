@@ -24,3 +24,8 @@ src/rlef/*_pb2*.py
 analysis/
 results/
 notebooks/
+instance data/
+checkpoints/
+checkpoint/
+data/
+prev_results/
