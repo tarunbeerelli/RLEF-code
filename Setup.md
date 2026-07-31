@@ -49,7 +49,7 @@ Process** $(\mathcal{S},\mathcal{A},P,R,H)$:
   appends structured feedback;
 - **reward** $R$ — a **verifiable** execution pass rate on held-out tests, not a learned
   proxy (§3);
-- **horizon** $H=\texttt{max\_turns}=3$, so $k=3$ throughout.
+- **horizon** $H$ — the `max_turns` setting, fixed at 3 — so $k=3$ throughout.
 
 ### Critic-free GRPO
 
@@ -66,7 +66,7 @@ $\pi_{\text{ref}}$ (the base model):
 $$
 \mathcal{L}(\theta)=-\,\mathbb{E}\!\left[\min\!\big(\rho_t\hat{A},\;
 \text{clip}(\rho_t,1{-}\epsilon,1{+}\epsilon)\,\hat{A}\big)\right]
-\;+\;\beta\,D_{\mathrm{KL}}\!\left(\pi_\theta\,\|\,\pi_{\text{ref}}\right),
+\;+\;\beta\,D_{\mathrm{KL}}\!\left(\pi_\theta\,\Vert\,\pi_{\text{ref}}\right),
 \qquad
 \rho_t=\frac{\pi_\theta(a_t\mid s_t)}{\pi_{\theta_{\text{old}}}(a_t\mid s_t)} .
 $$
@@ -85,7 +85,7 @@ distinguishes them ([RESULTS §7](./RESULTS.md#7-training-dynamics)).
 During training, an attempt's reward is the **fraction of graded test cases it passes**:
 
 $$
-r=\frac{\#\{\text{graded cases passed}\}}{\#\{\text{graded cases}\}}\in[0,1].
+r=\frac{\text{graded cases passed}}{\text{graded cases}}\in[0,1].
 $$
 
 Four of ten graded cases passing yields $r=0.4$. This is a **dense** reward, and a deliberate
@@ -190,7 +190,7 @@ door:
   be re-used on a different pass. A case recurs only on a later turn of the *same still-unsolved
   problem*, which is exactly where a second attempt is intended.
 - **A shown set that cannot be exhaustive.** At most one case is revealed per turn, so a problem
-  exposes at most $\texttt{max\_turns}-1=2$ cases. Every problem must carry **at least
+  exposes at most two cases (`max_turns` − 1). Every problem must carry **at least
   `max_turns` + 2 tests**, so revealed cases can never cover the graded set, and hard-coding
   them cannot pass the strict whole-question metric.
 
@@ -262,7 +262,7 @@ co-resident**. The case for a single GPU as the right instrument is in the
   the ~15k-token multi-turn KV cache always fits, and the OOM guard can drop a pathological
   trajectory without losing the step.
 - **Context-aware sizing.** The binding constraint is the concurrent KV cache, which scales with
-  $\texttt{max\_turns}\times\text{concurrency}$. Batch size and the vLLM split were set against each
+  `max_turns` × concurrency. Batch size and the vLLM split were set against each
   configuration's real context length, with buffer.
 - **Memory path.** FlashAttention-2 with automatic SDPA fallback, and gradient checkpointing.
 
