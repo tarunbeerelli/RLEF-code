@@ -47,7 +47,7 @@ analysis, and scope → **[RESULTS.md](./RESULTS.md)**
 
 ## The result
 
-![Repair rate against trainable capacity](./assets/repair_vs_capacity.png)
+<img src="./assets/repair_vs_capacity.png" width="660" alt="Repair rate against trainable capacity">
 
 **Repair rate** is the fraction of problems failed at turn 1 that are solved later in the
 loop. It controls for starting level, which a raw solve@3 − solve@1 gap does not: an arm
@@ -59,13 +59,13 @@ attention's own budget it sits *below* the untrained baseline. Every figure here
 **greedy, single-generation**, scored on strict whole-question success over a fixed
 713-problem held-out set.
 
-![Solve rates across every arm](./assets/solve_rates.png)
+<img src="./assets/solve_rates.png" width="760" alt="Solve rates across every arm">
 
 ---
 
 ## Reliability, measured
 
-![Two runs of one configuration](./assets/reliability.png)
+<img src="./assets/reliability.png" width="590" alt="Two runs of one configuration">
 
 One configuration was trained twice, to put a measured number on run-to-run reliability. Introductory scores moved by 0–3 problems; interview scores moved by 12–13, which
 is itself significant (z ≈ 2.2).
@@ -81,12 +81,12 @@ retraining on introductory, **±12** for retraining on interview.
 
 ## Cost of the capability
 
-![Drift against repair](./assets/drift_vs_repair.png)
+<img src="./assets/drift_vs_repair.png" width="570" alt="Drift against repair">
 
 Training reward barely distinguishes the arms — their success curves lie almost on top of
 one another. Drift does:
 
-![Rolling KL to the frozen base, A series](./assets/rolling_kl_A.png)
+<img src="./assets/rolling_kl_A.png" width="650" alt="Rolling KL to the frozen base, A series">
 
 Drift scales with adapter **rank**, and at matched parameters attention drifts *more* than
 feed-forward (0.061 against 0.040 at ~20 M; 0.101 against 0.073 at 60.56 M). What
@@ -137,9 +137,9 @@ Iterative code generation with execution feedback is a **finite-horizon Markov D
 Process** $(\mathcal{S},\mathcal{A},P,R,H)$: a state $s_t$ is the running context (the
 problem plus prior attempts and their feedback), an action $a_t$ is the tokens emitted at
 turn $t$, the transition is the deterministic sandbox appending executed feedback, the
-reward is a **verifiable** execution pass rate on held-out tests, and
-$H=\texttt{max\_turns}=3$ bounds the loop. The policy is optimised with **critic-free
-GRPO**. Full formalism, reward design, feedback regimes and hyperparameters:
+reward is a **verifiable** execution pass rate on held-out tests, and the horizon $H$ —
+the `max_turns` setting, 3 throughout — bounds the loop. The policy is optimised with
+**critic-free GRPO**. Full formalism, reward design, feedback regimes and hyperparameters:
 **[SETUP.md](./SETUP.md)**.
 
 The reported metric is **solve@k** — solved within a $k$-turn feedback loop under greedy
