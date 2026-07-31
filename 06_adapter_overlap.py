@@ -1,29 +1,48 @@
 #!/usr/bin/env python3
 """
-06_adapter_overlap.py  (v2 -- schema-corrected)
-===============================================
-Per-problem set analysis across adapter arms (attention-only / MLP-only / all-7).
+06_adapter_overlap.py  (v3)
+===========================
+Per-problem analysis of which parameter subspace hosts *error-conditioned repair*.
 
-WHY
----
-The aggregate table cannot separate two very different worlds:
+TERMS
+-----
+"Error-conditioned repair" is the ability to convert a localised, verified failure
+into a passing attempt. The environment supplies error detection and localisation
+(the harness states which case failed, with expected against actual output), so
+only the correction component is measured. In the standard taxonomy this is
+*extrinsic* self-correction -- it uses external feedback -- and is distinct from
+intrinsic self-correction, which relies on prompting alone and is widely reported
+to fail.
 
-  (i)  SUBSUMPTION  -- MLP-only solves (nearly) everything attention-only solves,
-                       plus more. One faculty, more capacity; the 3x parameter
-                       advantage is then the whole explanation.
-  (ii) DISSOCIATION -- the arms solve materially DIFFERENT problems. Two faculties,
-                       and the curriculum/MLP score parity reflects two routes to
-                       the same number.
+What the ablation can and cannot establish: adapting a subspace and observing the
+behaviour appear tells us where the behaviour is *learnable*, not where it is
+*represented*. Attention outputs feed the whole residual stream. The claim
+supported here is a learnability locus.
 
-This builds the paired 2x2 contingency table per arm-pair, runs McNemar's test (the
-correct paired test -- more powerful than the unpaired z-test on aggregates because
-it conditions on problem identity), and locates the observed overlap between the
-independence and subsumption reference points.
+WHY PAIRED
+----------
+Aggregate deltas of a few points on n = 250 cannot separate three different worlds:
 
-Secondary diagnostics, all enabled by the per-turn `errors` field:
-  * recovery-by-error-class  -- what kind of failure each arm recovers from
-  * degeneration profile     -- InvalidFormat rate by turn (repetition collapse)
-  * shortcut / hard-coding scan and code-length distributions
+  (i)   SUBSUMPTION  -- one arm solves everything the other does, plus more.
+                        One mechanism, more capacity.
+  (ii)  DISSOCIATION -- the arms solve materially different problems.
+                        Two mechanisms.
+  (iii) CAPACITY     -- the apparent advantage is trainable-parameter count, and
+                        vanishes once budgets are matched.
+
+(iii) is why the A4 (attention rank 96) and A5 (feed-forward rank 11) arms exist:
+they match the parameter budgets of A3 and A1 respectively, so subsystem and
+capacity can be varied independently.
+
+REPORTS
+-------
+  * paired 2x2 contingency tables with McNemar's test, per arm-pair per tier
+  * capacity grid: subsystem x budget -> solve rates and conditional recovery
+  * paired repair test: among problems BOTH arms failed at turn 1, who recovers?
+    (the load-bearing comparison -- conditions on a shared failure set, so it
+    isolates repair from single-shot capability)
+  * first-solve-turn profile, recovery by turn-1 error class, degeneration,
+    shortcut scan
 
 Standard library only. Python 3.8+.
 
@@ -40,6 +59,9 @@ import math
 import sys
 from pathlib import Path
 
+# --------------------------------------------------------------------------- #
+# Run registry. Adjust filenames here if yours differ.
+# --------------------------------------------------------------------------- #
 RUNS = {
     "base-single": "apps_eval_baseline_1turn_zeroshot_BASELINE.json",
     "base-loop": "apps_eval_baseline_3turn_last_failed_BASELINE.json",
@@ -47,29 +69,75 @@ RUNS = {
     "A1-attn": "apps_eval_run_5_proper_phase1.json",
     "A2-all7": "apps_eval_run_A2_all_layers.json",
     "A3-mlp": "apps_eval_run_A3_mlp_only.json",
+    "A4-attn-r96": "apps_eval_run_A4_attn_rank96.json",
+    "A5-mlp-r11": "apps_eval_run_A5_mlp_rank11.json",
     "B1-attn": "apps_eval_run_B1_fixed_tests_attn_only.json",
     "B2-all7": "apps_eval_run_B2_fixed_tests_all_layers.json",
     "B3-mlp": "apps_eval_run_B3_fixed_tests_mlp_only.json",
     "C1-curr": "apps_eval_run_phase2_B1_curriculum.json",
 }
 
+# (subsystem, LoRA rank, trainable params in millions) -- for the capacity grid
+ARM_META = {
+    "base-single": ("--", 0, 0.00),
+    "base-loop": ("--", 0, 0.00),
+    "S1-single": ("attn", 32, 20.19),
+    "A1-attn": ("attn", 32, 20.19),
+    "A2-all7": ("all7", 32, 80.74),
+    "A3-mlp": ("ffn", 32, 60.56),
+    "A4-attn-r96": ("attn", 96, 60.56),
+    "A5-mlp-r11": ("ffn", 11, 20.82),
+    "B1-attn": ("attn", 32, 20.19),
+    "B2-all7": ("all7", 32, 80.74),
+    "B3-mlp": ("ffn", 32, 60.56),
+    "C1-curr": ("attn", 32, 20.19),
+}
+
+# A series shares one feedback objective, so the capacity grid is drawn from it.
+CAPACITY_GRID = [
+    "base-loop",
+    "A5-mlp-r11",
+    "A1-attn",
+    "A3-mlp",
+    "A4-attn-r96",
+    "A2-all7",
+]
+
 PAIRS_OF_INTEREST = [
-    ("A3-mlp", "A1-attn"),  # THE key test
-    ("A3-mlp", "A2-all7"),  # why does all-7 trail its own MLP subset?
+    # --- original dissociation tests -------------------------------------- #
+    ("A3-mlp", "A1-attn"),  # rank-matched: feed-forward vs attention
+    ("A3-mlp", "A2-all7"),  # why does all-7 trail its own feed-forward subset?
     ("A2-all7", "A1-attn"),  # does all-7 land on the attention solution?
     ("B3-mlp", "B1-attn"),  # same test under unseen real tests
     ("C1-curr", "A3-mlp"),  # parity: same problems or different routes?
     ("C1-curr", "A1-attn"),  # what the curriculum phase added
-    ("B2-all7", "B1-attn"),
-    ("B3-mlp", "B2-all7"),
+    ("B2-all7", "B1-attn"),  # all-7 vs attention, B regime
+    ("B3-mlp", "B2-all7"),  # feed-forward vs all-7, B regime
     (
         "C1-curr",
         "B1-attn",
-    ),  # staging isolated: same adapter, same objective, warm vs cold
-    (
-        "C1-curr",
-        "B3-mlp",
-    ),  # attention curriculum vs feed-forward on a matched objective
+    ),  # staging isolated: same adapter and objective, warm vs cold
+    ("C1-curr", "B3-mlp"),  # attention curriculum vs feed-forward, matched objective
+    # --- capacity-controlled tests (A4 / A5) ------------------------------ #
+    ("A4-attn-r96", "A3-mlp"),  # matched 60.56 M: attention vs feed-forward
+    ("A5-mlp-r11", "A1-attn"),  # matched ~20 M: the mirror comparison
+    ("A4-attn-r96", "A1-attn"),  # capacity sweep within attention (3x)
+    ("A3-mlp", "A5-mlp-r11"),  # capacity sweep within feed-forward (3x)
+    ("C1-curr", "A4-attn-r96"),  # staging at 20 M vs raw capacity at 60 M
+    # --- against the untrained loop --------------------------------------- #
+    ("A1-attn", "base-loop"),  # which problems attention training adds
+    ("A3-mlp", "base-loop"),  # which problems feed-forward training adds
+]
+
+# Pairs for the paired repair test (shared turn-1 failure set).
+REPAIR_PAIRS = [
+    ("A1-attn", "A5-mlp-r11"),  # matched ~20 M -- the load-bearing comparison
+    ("A4-attn-r96", "A3-mlp"),  # matched 60.56 M
+    ("A1-attn", "base-loop"),  # does attention training add repair at all?
+    ("A5-mlp-r11", "base-loop"),  # does feed-forward at low budget add any?
+    ("A4-attn-r96", "A1-attn"),  # does 3x capacity add repair within attention?
+    ("A3-mlp", "A5-mlp-r11"),  # does 3x capacity add repair within feed-forward?
+    ("C1-curr", "A4-attn-r96"),  # staging vs capacity
 ]
 
 TIERS = ["introductory", "interview", "competition"]
@@ -78,7 +146,6 @@ ID_KEYS = ("problem_id", "id", "pid", "task_id", "index")
 DIFF_KEYS = ("difficulty", "level", "tier", "bucket")
 CODE_KEYS = ("completion", "code", "final_code", "solution", "generation")
 HIST_KEYS = ("turn_history", "turns", "history", "trajectory")
-# Record-level authoritative strict-success flags (0/1 ints in this harness).
 P1_KEYS = ("pass_at_1", "pass@1", "solved_turn1")
 PN_KEYS = ("pass_at_N", "pass_at_n", "pass_at_3", "pass_at_k", "pass@k", "solved")
 RATE_KEYS = ("pass_rate", "reward", "score", "fraction_passed")
@@ -98,6 +165,9 @@ SHORTCUT_PATTERNS = [
 ]
 
 
+# --------------------------------------------------------------------------- #
+# schema helpers
+# --------------------------------------------------------------------------- #
 def first_key(d, keys, default=None):
     for k in keys:
         if isinstance(d, dict) and k in d:
@@ -150,8 +220,7 @@ def dominant_error(errs):
     counts = {}
     for e in errs:
         counts[str(e)] = counts.get(str(e), 0) + 1
-    # InvalidFormat is a protocol failure and takes precedence when present.
-    if "InvalidFormat" in counts:
+    if "InvalidFormat" in counts:  # a protocol failure takes precedence
         return "InvalidFormat"
     return max(counts, key=counts.get)
 
@@ -181,7 +250,7 @@ def load_run(path: Path):
     res = data.get("results") or data.get("problems") or []
     out, warn = {}, 0
 
-    # Detect turn-number base (this harness is 1-indexed).
+    # Detect the turn-number base (this harness is 1-indexed).
     bases = []
     for r in res[:50]:
         h = first_key(r, HIST_KEYS)
@@ -212,13 +281,13 @@ def load_run(path: Path):
         t0 = as_flag(first_key(r, P1_KEYS))
         lp = as_flag(first_key(r, PN_KEYS))
 
-        inferred_t0 = turn_solved(ordered[0]) if ordered else None
-        inferred_lp = any(turn_solved(t) for t in ordered) if ordered else None
+        inf_t0 = turn_solved(ordered[0]) if ordered else None
+        inf_lp = any(turn_solved(t) for t in ordered) if ordered else None
         if t0 is None:
-            t0 = inferred_t0 if inferred_t0 is not None else False
+            t0 = inf_t0 if inf_t0 is not None else False
         if lp is None:
-            lp = inferred_lp if inferred_lp is not None else t0
-        if inferred_lp is not None and lp != inferred_lp:
+            lp = inf_lp if inf_lp is not None else t0
+        if inf_lp is not None and lp != inf_lp:
             warn += 1
 
         first_turn = None
@@ -228,15 +297,13 @@ def load_run(path: Path):
                 first_turn = (int(n) - turn_base) if isinstance(n, int) else j
                 break
 
-        errs_by_turn = [first_key(t, ERR_KEYS, default=[]) or [] for t in ordered]
-
         out[pid] = {
             "tier": tier,
             "t0": bool(t0),
             "loop": bool(lp),
             "first_turn": first_turn,
             "code": code,
-            "errs": errs_by_turn,
+            "errs": [first_key(t, ERR_KEYS, default=[]) or [] for t in ordered],
             "n_turns": len(ordered),
         }
 
@@ -245,7 +312,11 @@ def load_run(path: Path):
     return out, data.get("summary", {}), turn_base
 
 
+# --------------------------------------------------------------------------- #
+# statistics
+# --------------------------------------------------------------------------- #
 def mcnemar(b, c):
+    """Paired test on discordant cells. b = A only, c = B only."""
     n = b + c
     if n == 0:
         return ("n/a", 0.0, 1.0)
@@ -261,6 +332,18 @@ def mcnemar(b, c):
     return ("chi2 Yates 1df", stat, math.erfc(math.sqrt(stat / 2.0)))
 
 
+def z2(x1, n1, x2, n2):
+    """Unpooled-free two-proportion z-test on counts."""
+    if n1 == 0 or n2 == 0:
+        return 0.0
+    p = (x1 + x2) / (n1 + n2)
+    se = math.sqrt(p * (1 - p) * (1 / n1 + 1 / n2))
+    return (x1 / n1 - x2 / n2) / se if se > 0 else 0.0
+
+
+# --------------------------------------------------------------------------- #
+# reports
+# --------------------------------------------------------------------------- #
 def report_pair(na, nb, ra, rb, metric, tier):
     common = {p for p in (set(ra) & set(rb)) if ra[p]["tier"] == tier}
     if not common:
@@ -303,6 +386,75 @@ def report_pair(na, nb, ra, rb, metric, tier):
     print()
 
 
+def report_capacity_grid(runs, tier="introductory"):
+    """subsystem x capacity -> solve rates and conditional repair rate"""
+    print("\n" + "=" * 100)
+    print(
+        f"CAPACITY GRID ({tier})  -- subsystem and trainable budget varied independently"
+    )
+    print("=" * 100)
+    print(
+        f"{'run':14} {'sub':5} {'rank':>5} {'params':>9} {'solve@1':>8} {'solve@3':>8} "
+        f"{'gap':>6} {'repair rate':>16}"
+    )
+    print("-" * 100)
+    for name in CAPACITY_GRID:
+        if name not in runs:
+            continue
+        run = runs[name][0]
+        sel = [v for v in run.values() if v["tier"] == tier]
+        if not sel:
+            continue
+        n = len(sel)
+        s1 = sum(1 for v in sel if v["t0"])
+        s3 = sum(1 for v in sel if v["loop"])
+        fails = [v for v in sel if not v["t0"]]
+        rec = sum(1 for v in fails if v["loop"])
+        sub, rank, prm = ARM_META.get(name, ("?", 0, 0.0))
+        rk = f"{rank}" if rank else "--"
+        pm = f"{prm:.2f}M" if prm else "--"
+        print(
+            f"{name:14} {sub:5} {rk:>5} {pm:>9} {100*s1/n:7.1f}% {100*s3/n:7.1f}% "
+            f"{100*(s3-s1)/n:+5.1f}  {rec:3d}/{len(fails):3d} = {100*rec/len(fails):5.1f}%"
+        )
+    print(
+        "\nrepair rate = of problems failed at turn 1, the fraction solved later in the loop."
+    )
+    print("It controls for starting level, which the raw gap does not.")
+
+
+def report_repair_paired(na, nb, ra, rb, tier="introductory"):
+    """
+    Among problems BOTH arms failed at turn 1, which arm repairs more?
+    Conditioning on a shared failure set isolates repair from single-shot capability.
+    """
+    common = {
+        p
+        for p in (set(ra) & set(rb))
+        if ra[p]["tier"] == tier and not ra[p]["t0"] and not rb[p]["t0"]
+    }
+    if not common:
+        print(f"  [{tier}] no shared turn-1 failures")
+        return
+    A = {p for p in common if ra[p]["loop"]}
+    B = {p for p in common if rb[p]["loop"]}
+    a, b, c = len(A & B), len(A - B), len(B - A)
+    n = len(common)
+    lab, stat, p = mcnemar(b, c)
+    zu = z2(len(A), n, len(B), n)
+    print(f"  [{tier:13}] shared turn-1 failures = {n}")
+    print(
+        f"                 {na} repaired {len(A):3d} ({100*len(A)/n:5.1f}%)    "
+        f"{nb} repaired {len(B):3d} ({100*len(B)/n:5.1f}%)"
+    )
+    print(f"                 both={a:3d}   {na}-only={b:3d}   {nb}-only={c:3d}")
+    print(
+        f"                 McNemar {lab}: stat={stat:.3f} p={p:.4f}{'  *SIG*' if p < .05 else ''}"
+        f"   (unpaired z = {zu:+.2f})"
+    )
+    print()
+
+
 def report_turns(runs, tier="introductory"):
     print("\n" + "=" * 100)
     print(
@@ -310,7 +462,7 @@ def report_turns(runs, tier="introductory"):
     )
     print("=" * 100)
     print(
-        f"{'run':12} {'turn1':>7} {'turn2':>7} {'turn3':>7} {'total':>7} {'recovery':>10}"
+        f"{'run':14} {'turn1':>7} {'turn2':>7} {'turn3':>7} {'total':>7} {'repair':>10}"
     )
     for name, (run, _s, _b) in runs.items():
         sel = [v for v in run.values() if v["tier"] == tier]
@@ -324,17 +476,15 @@ def report_turns(runs, tier="introductory"):
         tot = sum(c.values())
         failed = n - c[0]
         rec = 100 * (tot - c[0]) / failed if failed else 0.0
-        print(f"{name:12} {c[0]:7d} {c[1]:7d} {c[2]:7d} {tot:7d} {rec:9.1f}%")
-    print("\nrecovery = of turn-1 failures, fraction solved later in the loop")
-    print("(starting-level-controlled measure of self-correction)")
+        print(f"{name:14} {c[0]:7d} {c[1]:7d} {c[2]:7d} {tot:7d} {rec:9.1f}%")
 
 
 def report_recovery_by_error(runs, tier="introductory"):
     print("\n" + "=" * 100)
-    print(f"RECOVERY BY TURN-1 ERROR CLASS ({tier})  -- what each arm recovers FROM")
+    print(f"REPAIR BY TURN-1 ERROR CLASS ({tier})  -- what each arm repairs FROM")
     print("=" * 100)
     classes = ["WrongOutput", "Timeout", "RuntimeError", "InvalidFormat", "None"]
-    print(f"{'run':12} " + " ".join(f"{c[:11]:>13}" for c in classes))
+    print(f"{'run':14} " + " ".join(f"{c[:11]:>13}" for c in classes))
     for name, (run, _s, _b) in runs.items():
         sel = [v for v in run.values() if v["tier"] == tier and v["n_turns"] > 1]
         if not sel:
@@ -348,26 +498,18 @@ def report_recovery_by_error(runs, tier="introductory"):
             den[k] += 1
             if v["loop"]:
                 num[k] += 1
-        cells = []
-        for c in classes:
-            cells.append(
-                f"{100*num[c]/den[c]:6.1f}% {den[c]:4d}" if den[c] else f"{'--':>12}"
-            )
-        print(f"{name:12} " + " ".join(f"{x:>13}" for x in cells))
-    print(
-        "\nreads as  recovery% n   over problems whose turn-1 failure was that class."
-    )
-    print(
-        "Concentration of MLP recovery in WrongOutput would indicate output/convention"
-    )
-    print("repair (a pattern faculty) rather than routing-driven correction.")
+        cells = [
+            f"{100*num[c]/den[c]:6.1f}% {den[c]:4d}" if den[c] else f"{'--':>12}"
+            for c in classes
+        ]
+        print(f"{name:14} " + " ".join(f"{x:>13}" for x in cells))
 
 
 def report_degeneration(runs, tier="introductory"):
     print("\n" + "=" * 100)
     print(f"DEGENERATION PROFILE ({tier})  -- InvalidFormat rate by turn")
     print("=" * 100)
-    print(f"{'run':12} {'turn1':>9} {'turn2':>9} {'turn3':>9}")
+    print(f"{'run':14} {'turn1':>9} {'turn2':>9} {'turn3':>9}")
     for name, (run, _s, _b) in runs.items():
         sel = [v for v in run.values() if v["tier"] == tier]
         if not sel or max(v["n_turns"] for v in sel) < 2:
@@ -382,25 +524,23 @@ def report_degeneration(runs, tier="introductory"):
                 and dominant_error(v["errs"][ti]) == "InvalidFormat"
             )
             row.append(f"{100*k/n:8.1f}%" if n else f"{'--':>9}")
-        print(f"{name:12} " + " ".join(row))
-    print("\nA rising InvalidFormat rate across turns indicates repetition collapse /")
-    print("truncation before a parseable code block is emitted.")
+        print(f"{name:14} " + " ".join(row))
 
 
 def report_shortcuts(runs):
     print("\n" + "=" * 100)
     print("SHORTCUT SCAN + CODE LENGTH")
     print("=" * 100)
-    print(f"{'run':12} {'n':>5} {'shortcut%':>10} {'median':>8} {'p90':>7}")
+    print(f"{'run':14} {'n':>5} {'shortcut%':>10} {'median':>8} {'p90':>7}")
     for name, (run, _s, _b) in runs.items():
         codes = [v["code"] for v in run.values() if v["code"]]
         if not codes:
-            print(f"{name:12} {'--':>5}")
+            print(f"{name:14} {'--':>5}")
             continue
         hits = sum(1 for c in codes if any(p in c.lower() for p in SHORTCUT_PATTERNS))
         lens = sorted(len(c.split()) for c in codes)
         print(
-            f"{name:12} {len(codes):5d} {100*hits/len(codes):9.2f}% "
+            f"{name:14} {len(codes):5d} {100*hits/len(codes):9.2f}% "
             f"{lens[len(lens)//2]:8d} {lens[int(.9*(len(lens)-1))]:7d}"
         )
 
@@ -413,18 +553,20 @@ def reconcile(name, run, summary):
     for tier in TIERS:
         if tier not in bd:
             continue
-        tot = bd[tier].get("total")
-        exp1 = bd[tier].get("pass_at_1")
+        tot, exp1 = bd[tier].get("total"), bd[tier].get("pass_at_1")
         got = sum(1 for v in run.values() if v["tier"] == tier and v["t0"])
         cnt = sum(1 for v in run.values() if v["tier"] == tier)
         if exp1 is not None and tot:
             want = round(exp1 * tot)
-            flag = "OK" if want == got and cnt == tot else "MISMATCH"
-            msgs.append(f"{tier[:5]}:{got}/{want}{'' if flag=='OK' else ' !!'}")
+            msgs.append(
+                f"{tier[:5]}:{got}/{want}"
+                + ("" if want == got and cnt == tot else " !!")
+            )
     if msgs:
         print("    reconcile solve@1 vs summary -> " + "  ".join(msgs))
 
 
+# --------------------------------------------------------------------------- #
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--results-dir", default="results")
@@ -452,11 +594,22 @@ def main():
             t0 = sum(v["t0"] for v in run.values())
             lp = sum(v["loop"] for v in run.values())
             print(
-                f"  {name:12} n={len(run):4d} solve@1={t0:3d} solve@k={lp:3d} turn_base={base}"
+                f"  {name:14} n={len(run):4d} solve@1={t0:3d} solve@k={lp:3d} turn_base={base}"
             )
             reconcile(name, run, summ)
         except Exception as e:
             print(f"  FAILED {name}: {type(e).__name__}: {e}")
+
+    report_capacity_grid(runs)
+
+    print("\n" + "=" * 100)
+    print("PAIRED REPAIR TEST  -- conditioned on problems BOTH arms failed at turn 1")
+    print("=" * 100)
+    for na, nb in REPAIR_PAIRS:
+        if na in runs and nb in runs:
+            print(f"\n{na}  vs  {nb}")
+            for tier in ("introductory", "interview"):
+                report_repair_paired(na, nb, runs[na][0], runs[nb][0], tier)
 
     for metric in ["t0", "loop"] if a.metric == "both" else [a.metric]:
         print("\n" + "=" * 100)
@@ -476,16 +629,26 @@ def main():
     report_shortcuts(runs)
 
     print("\n" + "=" * 100)
-    print("DECISION GUIDE -- A3-mlp vs A1-attn, introductory, solve@1")
+    print("READING GUIDE")
     print("=" * 100)
     print("""
-  A1-only near 0, axis >= +0.80        -> SUBSUMPTION. One faculty, more capacity.
-                                          Keep the claim capacity-scoped (3x params).
-  A1-only substantial, axis <= +0.45   -> DISSOCIATION. Two faculties. Licenses the
-                                          strong mechanistic framing, and makes the
-                                          curriculum/MLP parity two routes to one score.
-  Otherwise                            -> partial. Print the table verbatim; McNemar's p
-                                          says whether the asymmetry itself is real.
+  CAPACITY GRID -- the primary result. Read the repair-rate column down each
+      subsystem: if attention holds its rate across a 3x budget change while
+      feed-forward's scales with budget, repair is attention-hosted and the
+      apparent feed-forward advantage on solve@1 was capacity.
+
+  PAIRED REPAIR TEST -- the load-bearing comparison, because it conditions on a
+      shared turn-1 failure set and so cannot be explained by one arm simply
+      solving more at first attempt.
+
+  PAIRED OVERLAP, axis position:
+      >= +0.80  one arm nearly subsumes the other -- one mechanism, more capacity
+      <= +0.45  the arms solve materially different problems -- two mechanisms
+      between   partial; report the contingency table and let McNemar's p carry it
+
+  NOISE FLOOR -- repeat evaluation of one checkpoint moved individual tier metrics
+      by about one problem (~0.4 pp), driven by timeout non-determinism. Differences
+      of one or two problems are not interpretable.
 """)
 
 
