@@ -35,19 +35,19 @@ aggregate.
 The object of study is **error-conditioned repair** — converting a localised, verified
 failure into a passing attempt — and the result is a **learnability locus** rather than a
 representational one. Both are made precise in
-[SETUP §1](./SETUP.md#1-what-the-study-measures).
+[SETUP §1](SETUP.md#1-what-the-study-measures).
 
 **Live experiment tracking:**
 [W&B — rlef-code2 workspace](https://wandb.ai/tarunbeerelli-northeastern-university/rlef-code2/workspace)
 
-**Read next:** methods and reproducibility → **[SETUP.md](./SETUP.md)** · results, paired
-analysis, and scope → **[RESULTS.md](./RESULTS.md)**
+**Read next:** methods and reproducibility → **[SETUP.md](SETUP.md)** · results, paired
+analysis, and scope → **[RESULTS.md](RESULTS.md)**
 
 ---
 
 ## The result
 
-<img src="./assets/repair_vs_capacity.png" width="660" alt="Repair rate against trainable capacity">
+<img src="assets/repair_vs_capacity.png" width="660" alt="Repair rate against trainable capacity">
 
 **Repair rate** is the fraction of problems failed at turn 1 that are solved later in the
 loop. It controls for starting level, which a raw solve@3 − solve@1 gap does not: an arm
@@ -59,13 +59,13 @@ attention's own budget it sits *below* the untrained baseline. Every figure here
 **greedy, single-generation**, scored on strict whole-question success over a fixed
 713-problem held-out set.
 
-<img src="./assets/solve_rates.png" width="760" alt="Solve rates across every arm">
+<img src="assets/solve_rates.png" width="760" alt="Solve rates across every arm">
 
 ---
 
 ## Reliability, measured
 
-<img src="./assets/reliability.png" width="590" alt="Two runs of one configuration">
+<img src="assets/reliability.png" width="590" alt="Two runs of one configuration">
 
 One configuration was trained twice, to put a measured number on run-to-run reliability. Introductory scores moved by 0–3 problems; interview scores moved by 12–13, which
 is itself significant (z ≈ 2.2).
@@ -81,12 +81,12 @@ retraining on introductory, **±12** for retraining on interview.
 
 ## Cost of the capability
 
-<img src="./assets/drift_vs_repair.png" width="570" alt="Drift against repair">
+<img src="assets/drift_vs_repair.png" width="570" alt="Drift against repair">
 
 Training reward barely distinguishes the arms — their success curves lie almost on top of
 one another. Drift does:
 
-<img src="./assets/rolling_kl_A.png" width="650" alt="Rolling KL to the frozen base, A series">
+<img src="assets/rolling_kl_A.png" width="650" alt="Rolling KL to the frozen base, A series">
 
 Drift scales with adapter **rank**, and at matched parameters attention drifts *more* than
 feed-forward (0.061 against 0.040 at ~20 M; 0.101 against 0.073 at 60.56 M). What
@@ -127,7 +127,7 @@ split. For a controlled mechanistic study this is the right instrument.
   calibratable.
 
 Full infrastructure detail and every hyperparameter:
-[SETUP §7](./SETUP.md#7-infrastructure-and-hyperparameters).
+[SETUP §7](SETUP.md#7-infrastructure-and-hyperparameters).
 
 ---
 
@@ -140,11 +140,11 @@ turn $t$, the transition is the deterministic sandbox appending executed feedbac
 reward is a **verifiable** execution pass rate on held-out tests, and the horizon $H$ —
 the `max_turns` setting, 3 throughout — bounds the loop. The policy is optimised with
 **critic-free GRPO**. Full formalism, reward design, feedback regimes and hyperparameters:
-**[SETUP.md](./SETUP.md)**.
+**[SETUP.md](SETUP.md)**.
 
 The reported metric is **solve@k** — solved within a $k$-turn feedback loop under greedy
 decoding — and deliberately not the $k$-sample `pass@k` estimator of Chen et al. (2021);
-see [RESULTS §3](./RESULTS.md#3-how-to-read-the-numbers).
+see [RESULTS §3](RESULTS.md#3-how-to-read-the-numbers).
 
 ---
 
@@ -209,7 +209,7 @@ matches a 3× larger adapter at a third the parameters. And a duplicated configu
 measured number on run-to-run reliability, which is what fixes the resolution of every claim
 that follows.
 
-Full numbers, paired tests, and scope: **[RESULTS.md](./RESULTS.md)**.
+Full numbers, paired tests, and scope: **[RESULTS.md](RESULTS.md)**.
 
 ---
 

@@ -1,8 +1,8 @@
 # RLEF-Code — Results & Analysis
 
-*Methods: **[SETUP.md](./SETUP.md)**. Overview: **[README.md](./README.md)**. The paired analysis in
-§6 is reproducible via [`06_adapter_overlap.py`](./06_adapter_overlap.py); its committed output is
-[`06_adapter_overlap.txt`](./06_adapter_overlap.txt).*
+*Methods: **[SETUP.md](SETUP.md)**. Overview: **[README.md](README.md)**. The paired analysis in
+§6 is reproducible via [`06_adapter_overlap.py`](06_adapter_overlap.py); its committed output is
+[`06_adapter_overlap.txt`](06_adapter_overlap.txt).*
 
 **Live experiment tracking:**
 [W&B — rlef-code2 workspace](https://wandb.ai/tarunbeerelli-northeastern-university/rlef-code2/workspace)
@@ -32,9 +32,9 @@ held fixed supports that, while overturning two intermediate claims along the wa
 > solve@3 at 20.19 M parameters, against a rank-96 attention arm's 34.4% at 60.56 M.
 
 Three boundaries, stated once and honoured throughout. Repair here means **refinement** under a dense
-reward ([SETUP §3](./SETUP.md#3-reward-design--the-decision-everything-turns-on)). The result is a
+reward ([SETUP §3](SETUP.md#3-reward-design--the-decision-everything-turns-on)). The result is a
 **learnability locus**, not a representational one
-([SETUP §1](./SETUP.md#1-what-the-study-measures)). And **all claims are confined to the introductory
+([SETUP §1](SETUP.md#1-what-the-study-measures)). And **all claims are confined to the introductory
 tier**, for a reason given in §2.
 
 ---
@@ -44,7 +44,7 @@ tier**, for a reason given in §2.
 One configuration (A4) was trained twice to put a measured number on run-to-run reliability
 rather than assume it.
 
-<img src="./assets/reliability.png" width="590" alt="Two runs of one configuration">
+<img src="assets/reliability.png" width="590" alt="Two runs of one configuration">
 
 | | run 1 | run 2 | Δ | z |
 |---|---|---|---|---|
@@ -63,7 +63,7 @@ significantly on the interview tier. Measured repeat-measurement variance:
 
 **This confirms the design.** The dense reward pays for refinement, so it targets problems a
 few edits from correct — the introductory tier
-([SETUP §3](./SETUP.md#3-reward-design--the-decision-everything-turns-on)). The harder tiers
+([SETUP §3](SETUP.md#3-reward-design--the-decision-everything-turns-on)). The harder tiers
 turn on algorithm-switching the reward does not incentivise, and their low base rates leave
 them dominated by problems sitting at the threshold of solvability: with 9–25 solves out of
 250, the tier measures which of those flip rather than a stable property. Introductory is
@@ -119,7 +119,7 @@ A1, A3, A4, A5 and A2 share the `last_failed` objective; B1–B3 use real held-o
 two. **A4's row reports its second run**; both runs appear in §2. D1, the self-graded arm, was scored on an earlier eval mix and is discussed in §5.4 for the collapse
 it demonstrates, and is not compared numerically.
 
-<img src="./assets/solve_rates.png" width="760" alt="Solve rates across every arm">
+<img src="assets/solve_rates.png" width="760" alt="Solve rates across every arm">
 
 ---
 
@@ -141,7 +141,7 @@ for the attention arms in-loop gains are not smuggled single-shot competence.
 
 This is the core experiment. Four arms cross subsystem with trainable budget, everything else fixed.
 
-<img src="./assets/repair_vs_capacity.png" width="660" alt="Repair rate against capacity">
+<img src="assets/repair_vs_capacity.png" width="660" alt="Repair rate against capacity">
 
 | | ~20 M budget | 60.56 M budget |
 |---|---|---|
@@ -181,7 +181,7 @@ D1 has the model author its own tests before coding, then grades its code agains
 collapsed: introductory solve@1 fell to **3.6%**, below the untrained baseline, while training KL climbed
 monotonically.
 
-<img src="./assets/goodhart_training_curve.png" width="620" alt="D1 training success rate">
+<img src="assets/goodhart_training_curve.png" width="620" alt="D1 training success rate">
 
 The instructive part is the shape of the training curve. It stays high and even trends upward
 (mean ≈ 0.35, swinging ~0.1–0.75 across ~190 updates) because it scores the model against a yardstick
@@ -218,7 +218,7 @@ suggests the repair behaviour is a transferable routing skill rather than a per-
 Aggregate deltas of a few points on n = 250 cannot separate *more capacity* from *a different
 mechanism*. The comparisons below are paired on problem identity and tested with McNemar's test, which
 conditions on the same problems. Full output:
-[`06_adapter_overlap.txt`](./06_adapter_overlap.txt).
+[`06_adapter_overlap.txt`](06_adapter_overlap.txt).
 
 ### 6.1 The load-bearing test — repair on a shared failure set
 
@@ -314,12 +314,12 @@ A1's 10.9% of 193, with C1 at 10.1%. The feed-forward advantage sits entirely at
 **Reward does not distinguish the arms. Drift does.** Rolling success rate is nearly indistinguishable
 across all five arms — including A4 at three times A1's parameters:
 
-<img src="./assets/rolling_success_A.png" width="650" alt="Rolling success rate, all five A-series arms">
+<img src="assets/rolling_success_A.png" width="650" alt="Rolling success rate, all five A-series arms">
 
 Rolling KL to the frozen base separates them cleanly. The trace below shows the four
 capacity-grid arms; A2 (all-7) is tabulated with them:
 
-<img src="./assets/rolling_kl_A.png" width="650" alt="Rolling KL to the frozen base">
+<img src="assets/rolling_kl_A.png" width="650" alt="Rolling KL to the frozen base">
 
 | Arm | Rank | Params | rolling KL (end) | repair |
 |---|---|---|---|---|
@@ -329,7 +329,7 @@ capacity-grid arms; A2 (all-7) is tabulated with them:
 | A4 attn | 96 | 60.56M | 0.101 | 9.9% |
 | A2 all-7 | 32 | 80.74M | 0.128 | 6.9% |
 
-<img src="./assets/drift_vs_repair.png" width="570" alt="Drift against repair">
+<img src="assets/drift_vs_repair.png" width="570" alt="Drift against repair">
 
 **Rank sets drift, not subsystem** — and at matched parameters attention drifts *more* than feed-forward,
 0.061 against 0.040 at ~20 M and 0.101 against 0.073 at 60.56 M. Attention's advantage lies elsewhere.
@@ -343,13 +343,13 @@ repay.
 Two further observations. **B-series KL runs at roughly half the A-series' at matched step count**,
 independent evidence that the seen-case objective offers more to chase:
 
-<img src="./assets/kl_B_series.png" width="620" alt="Rolling KL, B series">
+<img src="assets/kl_B_series.png" width="620" alt="Rolling KL, B series">
 
 And attention-only runs tend to reach their task capability early, around the 40th sub-batch update.
 
 ### Degeneration — a regime effect
 
-<img src="./assets/degeneration.png" width="580" alt="Degeneration by turn">
+<img src="assets/degeneration.png" width="580" alt="Degeneration by turn">
 
 Turn-3 `InvalidFormat` rate on the introductory tier runs **1.1–2.9% under `last_failed` feedback** and
 **5.2–8.4% under real held-out tests**, matching the aggregate logs. Around 27–30 B-series records carry

@@ -1,7 +1,7 @@
 # RLEF-Code — Setup & Methods
 
 *The formalism, the design decisions, and everything needed to reproduce the runs. Results
-and analysis: **[RESULTS.md](./RESULTS.md)**. Overview: **[README.md](./README.md)**.*
+and analysis: **[RESULTS.md](RESULTS.md)**. Overview: **[README.md](README.md)**.*
 
 **Live experiment tracking:**
 [W&B — rlef-code2 workspace](https://wandb.ai/tarunbeerelli-northeastern-university/rlef-code2/workspace)
@@ -74,7 +74,7 @@ $$
 Because the policy's own rollouts are the training distribution, the KL to the frozen base
 doubles as the operational read-out of **policy drift**. It carries unusual weight here: the
 arms reach nearly identical *training* performance, so drift is the measurement that
-distinguishes them ([RESULTS §7](./RESULTS.md#7-training-dynamics)).
+distinguishes them ([RESULTS §7](RESULTS.md#7-training-dynamics)).
 
 ---
 
@@ -174,7 +174,7 @@ kept strictly separate from reward *shaping*:
   solutions before any GPU spend; the quickstart requires it to print `ALL GOOD`.
 - **Structured error taxonomy** — every turn records its failure classes (`WrongOutput`,
   `Timeout`, `RuntimeError`, `InvalidFormat`), which is what makes the turn-level diagnostics
-  in [RESULTS §7](./RESULTS.md#7-training-dynamics) possible.
+  in [RESULTS §7](RESULTS.md#7-training-dynamics) possible.
 
 ### 5.2 A series — `last_failed`, the direct signal
 
@@ -195,7 +195,7 @@ door:
   them cannot pass the strict whole-question metric.
 
 Both arguments were tested rather than trusted, and both held — see
-[RESULTS §6.5](./RESULTS.md#65-two-hypotheses-tested-and-discarded).
+[RESULTS §6.5](RESULTS.md#65-two-hypotheses-tested-and-discarded).
 
 ### 5.3 D1 — self-generated tests, an exploitable objective
 
@@ -204,7 +204,7 @@ first real case as an anchor, the model authors further tests from it, those tes
 reward is the model's code against the model's tests, with a **hard-code detector** penalising
 trivially-satisfiable tests. The intent was to induce deeper self-reasoning; the outcome is a
 clean Goodhart collapse, because the model owns both sides of the objective and can co-adapt
-them ([RESULTS §5.4](./RESULTS.md#54-d1--self-graded-tests-and-a-goodhart-collapse)).
+them ([RESULTS §5.4](RESULTS.md#54-d1--self-graded-tests-and-a-goodhart-collapse)).
 
 ### 5.4 B series — real held-out tests
 
@@ -226,7 +226,7 @@ small **0.15 random replay** set from the phase-1 pool to refresh earlier behavi
 The staging rationale is a division of labour: the A objective teaches *how to iterate*, so the
 second phase spends its budget learning *how to use the tests*. Because B1 is the same adapter on
 the same objective from cold, the C1-vs-B1 comparison isolates the warm start exactly
-([RESULTS §6.3](./RESULTS.md#63-what-staging-bought)).
+([RESULTS §6.3](RESULTS.md#63-what-staging-bought)).
 
 ---
 
@@ -255,7 +255,7 @@ the same objective from cold, the C1-vs-B1 comparison isolates the warm start ex
 
 All runs: **one NVIDIA H200 (141 GB HBM3e, ~4.8 TB/s)**, bf16, with **vLLM and PyTorch
 co-resident**. The case for a single GPU as the right instrument is in the
-[README](./README.md#a-deliberately-single-gpu-design). The engineering that makes it work:
+[README](README.md#a-deliberately-single-gpu-design). The engineering that makes it work:
 
 - **Sequential per-question rollout.** PyTorch processes one problem at a time — its full group of
   12 generations — with gradient accumulation across the batch. Peak memory tracks a single group,
@@ -332,7 +332,7 @@ changes, and whether the finding is about function or about these proportions is
 
 > **Metric naming, for anyone reading the code.** Source comments and W&B keys use `pass_at_1` and
 > `pass_at_N` for what these documents call `solve@1` and `solve@3`. The quantity is the loop-solve
-> defined in [RESULTS §3](./RESULTS.md#3-how-to-read-the-numbers) — not the $k$-sample estimator of
+> defined in [RESULTS §3](RESULTS.md#3-how-to-read-the-numbers) — not the $k$-sample estimator of
 > Chen et al. (2021) — regardless of key name.
 
 ---
