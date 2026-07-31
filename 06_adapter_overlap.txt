@@ -1,0 +1,643 @@
+================================================================================
+RLEF-Code | paired per-problem adapter analysis
+generated : 2026-07-31 03:26 UTC
+eval set  : 713 problems (250 introductory / 250 interview / 213 competition)
+metric    : solve@k = solved within a k-turn feedback loop, greedy, strict
+command   : poetry run python 06_adapter_overlap.py
+================================================================================
+
+found 11; missing: ['A2-all7']
+  base-single    n= 713 solve@1= 50 solve@k= 50 turn_base=1
+    reconcile solve@1 vs summary -> intro:43/43  inter:7/7  compe:0/0
+  base-loop      n= 713 solve@1= 45 solve@k= 56 turn_base=1
+    reconcile solve@1 vs summary -> intro:37/37  inter:7/7  compe:1/1
+  S1-single      n= 713 solve@1= 51 solve@k= 51 turn_base=1
+    reconcile solve@1 vs summary -> intro:45/45  inter:6/6  compe:0/0
+  A1-attn        n= 713 solve@1= 59 solve@k= 83 turn_base=1
+    reconcile solve@1 vs summary -> intro:49/49  inter:9/9  compe:1/1
+  A3-mlp         n= 713 solve@1= 94 solve@k=113 turn_base=1
+    reconcile solve@1 vs summary -> intro:66/66  inter:25/25  compe:3/3
+  A4-attn-r96    n= 713 solve@1= 90 solve@k=113 turn_base=1
+    reconcile solve@1 vs summary -> intro:68/68  inter:21/21  compe:1/1
+  A5-mlp-r11     n= 713 solve@1= 53 solve@k= 62 turn_base=1
+    reconcile solve@1 vs summary -> intro:44/44  inter:8/8  compe:1/1
+  B1-attn        n= 713 solve@1= 57 solve@k= 71 turn_base=1
+    reconcile solve@1 vs summary -> intro:46/46  inter:10/10  compe:1/1
+  B2-all7        n= 713 solve@1= 74 solve@k= 93 turn_base=1
+    reconcile solve@1 vs summary -> intro:53/53  inter:19/19  compe:2/2
+  B3-mlp         n= 713 solve@1= 81 solve@k=105 turn_base=1
+    reconcile solve@1 vs summary -> intro:58/58  inter:19/19  compe:4/4
+  C1-curr        n= 713 solve@1= 87 solve@k=113 turn_base=1
+    reconcile solve@1 vs summary -> intro:65/65  inter:20/20  compe:2/2
+
+====================================================================================================
+CAPACITY GRID (introductory)  -- subsystem and trainable budget varied independently
+====================================================================================================
+run            sub    rank    params  solve@1  solve@3    gap      repair rate
+----------------------------------------------------------------------------------------------------
+base-loop      --       --        --    14.8%    19.2%  +4.4   11/213 =   5.2%
+A5-mlp-r11     ffn      11    20.82M    17.6%    21.2%  +3.6    9/206 =   4.4%
+A1-attn        attn     32    20.19M    19.6%    28.0%  +8.4   21/201 =  10.4%
+A3-mlp         ffn      32    60.56M    26.4%    32.0%  +5.6   14/184 =   7.6%
+A4-attn-r96    attn     96    60.56M    27.2%    34.4%  +7.2   18/182 =   9.9%
+
+repair rate = of problems failed at turn 1, the fraction solved later in the loop.
+It controls for starting level, which the raw gap does not.
+
+====================================================================================================
+PAIRED REPAIR TEST  -- conditioned on problems BOTH arms failed at turn 1
+====================================================================================================
+
+A1-attn  vs  A5-mlp-r11
+  [introductory ] shared turn-1 failures = 194
+                 A1-attn repaired  21 ( 10.8%)    A5-mlp-r11 repaired   9 (  4.6%)
+                 both=  4   A1-attn-only= 17   A5-mlp-r11-only=  5
+                 McNemar exact binomial: stat=5.000 p=0.0169  *SIG*   (unpaired z = +2.28)
+
+  [interview    ] shared turn-1 failures = 60
+                 A1-attn repaired   0 (  0.0%)    A5-mlp-r11 repaired   0 (  0.0%)
+                 both=  0   A1-attn-only=  0   A5-mlp-r11-only=  0
+                 McNemar n/a: stat=0.000 p=1.0000   (unpaired z = +0.00)
+
+
+A4-attn-r96  vs  A3-mlp
+  [introductory ] shared turn-1 failures = 166
+                 A4-attn-r96 repaired  14 (  8.4%)    A3-mlp repaired  11 (  6.6%)
+                 both=  6   A4-attn-r96-only=  8   A3-mlp-only=  5
+                 McNemar exact binomial: stat=5.000 p=0.5811   (unpaired z = +0.62)
+
+  [interview    ] shared turn-1 failures = 76
+                 A4-attn-r96 repaired   1 (  1.3%)    A3-mlp repaired   1 (  1.3%)
+                 both=  0   A4-attn-r96-only=  1   A3-mlp-only=  1
+                 McNemar exact binomial: stat=1.000 p=1.0000   (unpaired z = +0.00)
+
+
+A1-attn  vs  base-loop
+  [introductory ] shared turn-1 failures = 194
+                 A1-attn repaired  21 ( 10.8%)    base-loop repaired   8 (  4.1%)
+                 both=  4   A1-attn-only= 17   base-loop-only=  4
+                 McNemar exact binomial: stat=4.000 p=0.0072  *SIG*   (unpaired z = +2.51)
+
+  [interview    ] shared turn-1 failures = 59
+                 A1-attn repaired   0 (  0.0%)    base-loop repaired   0 (  0.0%)
+                 both=  0   A1-attn-only=  0   base-loop-only=  0
+                 McNemar n/a: stat=0.000 p=1.0000   (unpaired z = +0.00)
+
+
+A5-mlp-r11  vs  base-loop
+  [introductory ] shared turn-1 failures = 200
+                 A5-mlp-r11 repaired   8 (  4.0%)    base-loop repaired   9 (  4.5%)
+                 both=  2   A5-mlp-r11-only=  6   base-loop-only=  7
+                 McNemar exact binomial: stat=6.000 p=1.0000   (unpaired z = -0.25)
+
+  [interview    ] shared turn-1 failures = 238
+                 A5-mlp-r11 repaired   0 (  0.0%)    base-loop repaired   0 (  0.0%)
+                 both=  0   A5-mlp-r11-only=  0   base-loop-only=  0
+                 McNemar n/a: stat=0.000 p=1.0000   (unpaired z = +0.00)
+
+
+A4-attn-r96  vs  A1-attn
+  [introductory ] shared turn-1 failures = 175
+                 A4-attn-r96 repaired  17 (  9.7%)    A1-attn repaired  12 (  6.9%)
+                 both=  8   A4-attn-r96-only=  9   A1-attn-only=  4
+                 McNemar exact binomial: stat=4.000 p=0.2668   (unpaired z = +0.97)
+
+  [interview    ] shared turn-1 failures = 80
+                 A4-attn-r96 repaired   1 (  1.2%)    A1-attn repaired   1 (  1.2%)
+                 both=  0   A4-attn-r96-only=  1   A1-attn-only=  1
+                 McNemar exact binomial: stat=1.000 p=1.0000   (unpaired z = +0.00)
+
+
+A3-mlp  vs  A5-mlp-r11
+  [introductory ] shared turn-1 failures = 174
+                 A3-mlp repaired  12 (  6.9%)    A5-mlp-r11 repaired   6 (  3.4%)
+                 both=  0   A3-mlp-only= 12   A5-mlp-r11-only=  6
+                 McNemar exact binomial: stat=6.000 p=0.2379   (unpaired z = +1.45)
+
+  [interview    ] shared turn-1 failures = 55
+                 A3-mlp repaired   0 (  0.0%)    A5-mlp-r11 repaired   0 (  0.0%)
+                 both=  0   A3-mlp-only=  0   A5-mlp-r11-only=  0
+                 McNemar n/a: stat=0.000 p=1.0000   (unpaired z = +0.00)
+
+
+C1-curr  vs  A4-attn-r96
+  [introductory ] shared turn-1 failures = 163
+                 C1-curr repaired  16 (  9.8%)    A4-attn-r96 repaired  14 (  8.6%)
+                 both=  8   C1-curr-only=  8   A4-attn-r96-only=  6
+                 McNemar exact binomial: stat=6.000 p=0.7905   (unpaired z = +0.38)
+
+  [interview    ] shared turn-1 failures = 77
+                 C1-curr repaired   1 (  1.3%)    A4-attn-r96 repaired   1 (  1.3%)
+                 both=  1   C1-curr-only=  0   A4-attn-r96-only=  0
+                 McNemar n/a: stat=0.000 p=1.0000   (unpaired z = +0.00)
+
+
+====================================================================================================
+PAIRED OVERLAP -- solve@1 (turn 1)
+====================================================================================================
+
+A3-mlp  vs  A1-attn
+  [introductory ] n= 250  A3-mlp:  66 ( 26.4%)   A1-attn:  49 ( 19.6%)
+                 both= 37   A3-mlp-only= 29   A1-attn-only= 12   neither=172
+                 Jaccard=0.474   overlap obs=37  indep=12.9  subsume=49
+                 axis position=+0.67  (intermediate)
+                 McNemar chi2 Yates 1df: stat=6.244 p=0.0125  *SIG*
+
+  [interview    ] n= 250  A3-mlp:  25 ( 10.0%)   A1-attn:   9 (  3.6%)
+                 both=  7   A3-mlp-only= 18   A1-attn-only=  2   neither=223
+                 Jaccard=0.259   overlap obs=7  indep=0.9  subsume=9
+                 axis position=+0.75  (intermediate)
+                 McNemar exact binomial: stat=2.000 p=0.0004  *SIG*
+
+
+B3-mlp  vs  B1-attn
+  [introductory ] n= 250  B3-mlp:  58 ( 23.2%)   B1-attn:  46 ( 18.4%)
+                 both= 38   B3-mlp-only= 20   B1-attn-only=  8   neither=184
+                 Jaccard=0.576   overlap obs=38  indep=10.7  subsume=46
+                 axis position=+0.77  (intermediate)
+                 McNemar chi2 Yates 1df: stat=4.321 p=0.0376  *SIG*
+
+  [interview    ] n= 250  B3-mlp:  19 (  7.6%)   B1-attn:  10 (  4.0%)
+                 both=  7   B3-mlp-only= 12   B1-attn-only=  3   neither=228
+                 Jaccard=0.318   overlap obs=7  indep=0.8  subsume=10
+                 axis position=+0.68  (intermediate)
+                 McNemar exact binomial: stat=3.000 p=0.0352  *SIG*
+
+
+C1-curr  vs  A3-mlp
+  [introductory ] n= 250  C1-curr:  65 ( 26.0%)   A3-mlp:  66 ( 26.4%)
+                 both= 48   C1-curr-only= 17   A3-mlp-only= 18   neither=167
+                 Jaccard=0.578   overlap obs=48  indep=17.2  subsume=65
+                 axis position=+0.64  (intermediate)
+                 McNemar chi2 Yates 1df: stat=0.000 p=1.0000
+
+  [interview    ] n= 250  C1-curr:  20 (  8.0%)   A3-mlp:  25 ( 10.0%)
+                 both= 13   C1-curr-only=  7   A3-mlp-only= 12   neither=218
+                 Jaccard=0.406   overlap obs=13  indep=2.0  subsume=20
+                 axis position=+0.61  (intermediate)
+                 McNemar exact binomial: stat=7.000 p=0.3593
+
+
+C1-curr  vs  A1-attn
+  [introductory ] n= 250  C1-curr:  65 ( 26.0%)   A1-attn:  49 ( 19.6%)
+                 both= 41   C1-curr-only= 24   A1-attn-only=  8   neither=177
+                 Jaccard=0.562   overlap obs=41  indep=12.7  subsume=49
+                 axis position=+0.78  (intermediate)
+                 McNemar chi2 Yates 1df: stat=7.031 p=0.0080  *SIG*
+
+  [interview    ] n= 250  C1-curr:  20 (  8.0%)   A1-attn:   9 (  3.6%)
+                 both=  5   C1-curr-only= 15   A1-attn-only=  4   neither=226
+                 Jaccard=0.208   overlap obs=5  indep=0.7  subsume=9
+                 axis position=+0.52  (intermediate)
+                 McNemar exact binomial: stat=4.000 p=0.0192  *SIG*
+
+
+B2-all7  vs  B1-attn
+  [introductory ] n= 250  B2-all7:  53 ( 21.2%)   B1-attn:  46 ( 18.4%)
+                 both= 37   B2-all7-only= 16   B1-attn-only=  9   neither=188
+                 Jaccard=0.597   overlap obs=37  indep=9.8  subsume=46
+                 axis position=+0.75  (intermediate)
+                 McNemar exact binomial: stat=9.000 p=0.2295
+
+  [interview    ] n= 250  B2-all7:  19 (  7.6%)   B1-attn:  10 (  4.0%)
+                 both=  8   B2-all7-only= 11   B1-attn-only=  2   neither=229
+                 Jaccard=0.381   overlap obs=8  indep=0.8  subsume=10
+                 axis position=+0.78  (intermediate)
+                 McNemar exact binomial: stat=2.000 p=0.0225  *SIG*
+
+
+B3-mlp  vs  B2-all7
+  [introductory ] n= 250  B3-mlp:  58 ( 23.2%)   B2-all7:  53 ( 21.2%)
+                 both= 45   B3-mlp-only= 13   B2-all7-only=  8   neither=184
+                 Jaccard=0.682   overlap obs=45  indep=12.3  subsume=53
+                 axis position=+0.80  (SUBSUMPTION-like)
+                 McNemar exact binomial: stat=8.000 p=0.3833
+
+  [interview    ] n= 250  B3-mlp:  19 (  7.6%)   B2-all7:  19 (  7.6%)
+                 both= 14   B3-mlp-only=  5   B2-all7-only=  5   neither=226
+                 Jaccard=0.583   overlap obs=14  indep=1.4  subsume=19
+                 axis position=+0.72  (intermediate)
+                 McNemar exact binomial: stat=5.000 p=1.0000
+
+
+C1-curr  vs  B1-attn
+  [introductory ] n= 250  C1-curr:  65 ( 26.0%)   B1-attn:  46 ( 18.4%)
+                 both= 41   C1-curr-only= 24   B1-attn-only=  5   neither=180
+                 Jaccard=0.586   overlap obs=41  indep=12.0  subsume=46
+                 axis position=+0.85  (SUBSUMPTION-like)
+                 McNemar chi2 Yates 1df: stat=11.172 p=0.0008  *SIG*
+
+  [interview    ] n= 250  C1-curr:  20 (  8.0%)   B1-attn:  10 (  4.0%)
+                 both=  7   C1-curr-only= 13   B1-attn-only=  3   neither=227
+                 Jaccard=0.304   overlap obs=7  indep=0.8  subsume=10
+                 axis position=+0.67  (intermediate)
+                 McNemar exact binomial: stat=3.000 p=0.0213  *SIG*
+
+
+C1-curr  vs  B3-mlp
+  [introductory ] n= 250  C1-curr:  65 ( 26.0%)   B3-mlp:  58 ( 23.2%)
+                 both= 45   C1-curr-only= 20   B3-mlp-only= 13   neither=172
+                 Jaccard=0.577   overlap obs=45  indep=15.1  subsume=58
+                 axis position=+0.70  (intermediate)
+                 McNemar chi2 Yates 1df: stat=1.091 p=0.2963
+
+  [interview    ] n= 250  C1-curr:  20 (  8.0%)   B3-mlp:  19 (  7.6%)
+                 both= 12   C1-curr-only=  8   B3-mlp-only=  7   neither=223
+                 Jaccard=0.444   overlap obs=12  indep=1.5  subsume=19
+                 axis position=+0.60  (intermediate)
+                 McNemar exact binomial: stat=7.000 p=1.0000
+
+
+A4-attn-r96  vs  A3-mlp
+  [introductory ] n= 250  A4-attn-r96:  68 ( 27.2%)   A3-mlp:  66 ( 26.4%)
+                 both= 50   A4-attn-r96-only= 18   A3-mlp-only= 16   neither=166
+                 Jaccard=0.595   overlap obs=50  indep=18.0  subsume=66
+                 axis position=+0.67  (intermediate)
+                 McNemar chi2 Yates 1df: stat=0.029 p=0.8638
+
+  [interview    ] n=  87  A4-attn-r96:   6 (  6.9%)   A3-mlp:  10 ( 11.5%)
+                 both=  5   A4-attn-r96-only=  1   A3-mlp-only=  5   neither= 76
+                 Jaccard=0.455   overlap obs=5  indep=0.7  subsume=6
+                 axis position=+0.81  (SUBSUMPTION-like)
+                 McNemar exact binomial: stat=1.000 p=0.2188
+
+
+A5-mlp-r11  vs  A1-attn
+  [introductory ] n= 250  A5-mlp-r11:  44 ( 17.6%)   A1-attn:  49 ( 19.6%)
+                 both= 37   A5-mlp-r11-only=  7   A1-attn-only= 12   neither=194
+                 Jaccard=0.661   overlap obs=37  indep=8.6  subsume=44
+                 axis position=+0.80  (SUBSUMPTION-like)
+                 McNemar exact binomial: stat=7.000 p=0.3593
+
+  [interview    ] n=  61  A5-mlp-r11:   1 (  1.6%)   A1-attn:   1 (  1.6%)
+                 both=  1   A5-mlp-r11-only=  0   A1-attn-only=  0   neither= 60
+                 Jaccard=1.000   overlap obs=1  indep=0.0  subsume=1
+                 axis position=+1.00  (SUBSUMPTION-like)
+                 McNemar n/a: stat=0.000 p=1.0000
+
+
+A4-attn-r96  vs  A1-attn
+  [introductory ] n= 250  A4-attn-r96:  68 ( 27.2%)   A1-attn:  49 ( 19.6%)
+                 both= 42   A4-attn-r96-only= 26   A1-attn-only=  7   neither=175
+                 Jaccard=0.560   overlap obs=42  indep=13.3  subsume=49
+                 axis position=+0.80  (SUBSUMPTION-like)
+                 McNemar chi2 Yates 1df: stat=9.818 p=0.0017  *SIG*
+
+  [interview    ] n=  87  A4-attn-r96:   6 (  6.9%)   A1-attn:   4 (  4.6%)
+                 both=  3   A4-attn-r96-only=  3   A1-attn-only=  1   neither= 80
+                 Jaccard=0.429   overlap obs=3  indep=0.3  subsume=4
+                 axis position=+0.73  (intermediate)
+                 McNemar exact binomial: stat=1.000 p=0.6250
+
+
+A3-mlp  vs  A5-mlp-r11
+  [introductory ] n= 250  A3-mlp:  66 ( 26.4%)   A5-mlp-r11:  44 ( 17.6%)
+                 both= 34   A3-mlp-only= 32   A5-mlp-r11-only= 10   neither=174
+                 Jaccard=0.447   overlap obs=34  indep=11.6  subsume=44
+                 axis position=+0.69  (intermediate)
+                 McNemar chi2 Yates 1df: stat=10.500 p=0.0012  *SIG*
+
+  [interview    ] n=  61  A3-mlp:   6 (  9.8%)   A5-mlp-r11:   1 (  1.6%)
+                 both=  1   A3-mlp-only=  5   A5-mlp-r11-only=  0   neither= 55
+                 Jaccard=0.167   overlap obs=1  indep=0.1  subsume=1
+                 axis position=+1.00  (SUBSUMPTION-like)
+                 McNemar exact binomial: stat=0.000 p=0.0625
+
+
+C1-curr  vs  A4-attn-r96
+  [introductory ] n= 250  C1-curr:  65 ( 26.0%)   A4-attn-r96:  68 ( 27.2%)
+                 both= 46   C1-curr-only= 19   A4-attn-r96-only= 22   neither=163
+                 Jaccard=0.529   overlap obs=46  indep=17.7  subsume=65
+                 axis position=+0.60  (intermediate)
+                 McNemar chi2 Yates 1df: stat=0.098 p=0.7548
+
+  [interview    ] n=  87  C1-curr:   8 (  9.2%)   A4-attn-r96:   6 (  6.9%)
+                 both=  4   C1-curr-only=  4   A4-attn-r96-only=  2   neither= 77
+                 Jaccard=0.400   overlap obs=4  indep=0.6  subsume=6
+                 axis position=+0.63  (intermediate)
+                 McNemar exact binomial: stat=2.000 p=0.6875
+
+
+A1-attn  vs  base-loop
+  [introductory ] n= 250  A1-attn:  49 ( 19.6%)   base-loop:  37 ( 14.8%)
+                 both= 30   A1-attn-only= 19   base-loop-only=  7   neither=194
+                 Jaccard=0.536   overlap obs=30  indep=7.3  subsume=37
+                 axis position=+0.76  (intermediate)
+                 McNemar chi2 Yates 1df: stat=4.654 p=0.0310  *SIG*
+
+  [interview    ] n=  61  A1-attn:   1 (  1.6%)   base-loop:   1 (  1.6%)
+                 both=  0   A1-attn-only=  1   base-loop-only=  1   neither= 59
+                 Jaccard=0.000   overlap obs=0  indep=0.0  subsume=1
+                 axis position=-0.02  (DISSOCIATION-like)
+                 McNemar exact binomial: stat=1.000 p=1.0000
+
+
+A3-mlp  vs  base-loop
+  [introductory ] n= 250  A3-mlp:  66 ( 26.4%)   base-loop:  37 ( 14.8%)
+                 both= 27   A3-mlp-only= 39   base-loop-only= 10   neither=174
+                 Jaccard=0.355   overlap obs=27  indep=9.8  subsume=37
+                 axis position=+0.63  (intermediate)
+                 McNemar chi2 Yates 1df: stat=16.000 p=0.0001  *SIG*
+
+  [interview    ] n=  61  A3-mlp:   6 (  9.8%)   base-loop:   1 (  1.6%)
+                 both=  1   A3-mlp-only=  5   base-loop-only=  0   neither= 55
+                 Jaccard=0.167   overlap obs=1  indep=0.1  subsume=1
+                 axis position=+1.00  (SUBSUMPTION-like)
+                 McNemar exact binomial: stat=0.000 p=0.0625
+
+
+====================================================================================================
+PAIRED OVERLAP -- solve@3 (within loop)
+====================================================================================================
+
+A3-mlp  vs  A1-attn
+  [introductory ] n= 250  A3-mlp:  80 ( 32.0%)   A1-attn:  70 ( 28.0%)
+                 both= 50   A3-mlp-only= 30   A1-attn-only= 20   neither=150
+                 Jaccard=0.500   overlap obs=50  indep=22.4  subsume=70
+                 axis position=+0.58  (intermediate)
+                 McNemar chi2 Yates 1df: stat=1.620 p=0.2031
+
+  [interview    ] n= 250  A3-mlp:  30 ( 12.0%)   A1-attn:  12 (  4.8%)
+                 both=  8   A3-mlp-only= 22   A1-attn-only=  4   neither=216
+                 Jaccard=0.235   overlap obs=8  indep=1.4  subsume=12
+                 axis position=+0.62  (intermediate)
+                 McNemar chi2 Yates 1df: stat=11.115 p=0.0009  *SIG*
+
+
+B3-mlp  vs  B1-attn
+  [introductory ] n= 250  B3-mlp:  74 ( 29.6%)   B1-attn:  59 ( 23.6%)
+                 both= 48   B3-mlp-only= 26   B1-attn-only= 11   neither=165
+                 Jaccard=0.565   overlap obs=48  indep=17.5  subsume=59
+                 axis position=+0.74  (intermediate)
+                 McNemar chi2 Yates 1df: stat=5.297 p=0.0214  *SIG*
+
+  [interview    ] n= 250  B3-mlp:  27 ( 10.8%)   B1-attn:  11 (  4.4%)
+                 both=  9   B3-mlp-only= 18   B1-attn-only=  2   neither=221
+                 Jaccard=0.310   overlap obs=9  indep=1.2  subsume=11
+                 axis position=+0.80  (intermediate)
+                 McNemar exact binomial: stat=2.000 p=0.0004  *SIG*
+
+
+C1-curr  vs  A3-mlp
+  [introductory ] n= 250  C1-curr:  85 ( 34.0%)   A3-mlp:  80 ( 32.0%)
+                 both= 59   C1-curr-only= 26   A3-mlp-only= 21   neither=144
+                 Jaccard=0.557   overlap obs=59  indep=27.2  subsume=80
+                 axis position=+0.60  (intermediate)
+                 McNemar chi2 Yates 1df: stat=0.340 p=0.5596
+
+  [interview    ] n= 250  C1-curr:  24 (  9.6%)   A3-mlp:  30 ( 12.0%)
+                 both= 17   C1-curr-only=  7   A3-mlp-only= 13   neither=213
+                 Jaccard=0.459   overlap obs=17  indep=2.9  subsume=24
+                 axis position=+0.67  (intermediate)
+                 McNemar exact binomial: stat=7.000 p=0.2632
+
+
+C1-curr  vs  A1-attn
+  [introductory ] n= 250  C1-curr:  85 ( 34.0%)   A1-attn:  70 ( 28.0%)
+                 both= 56   C1-curr-only= 29   A1-attn-only= 14   neither=151
+                 Jaccard=0.566   overlap obs=56  indep=23.8  subsume=70
+                 axis position=+0.70  (intermediate)
+                 McNemar chi2 Yates 1df: stat=4.558 p=0.0328  *SIG*
+
+  [interview    ] n= 250  C1-curr:  24 (  9.6%)   A1-attn:  12 (  4.8%)
+                 both=  6   C1-curr-only= 18   A1-attn-only=  6   neither=220
+                 Jaccard=0.200   overlap obs=6  indep=1.2  subsume=12
+                 axis position=+0.45  (DISSOCIATION-like)
+                 McNemar exact binomial: stat=6.000 p=0.0227  *SIG*
+
+
+B2-all7  vs  B1-attn
+  [introductory ] n= 250  B2-all7:  65 ( 26.0%)   B1-attn:  59 ( 23.6%)
+                 both= 48   B2-all7-only= 17   B1-attn-only= 11   neither=174
+                 Jaccard=0.632   overlap obs=48  indep=15.3  subsume=59
+                 axis position=+0.75  (intermediate)
+                 McNemar chi2 Yates 1df: stat=0.893 p=0.3447
+
+  [interview    ] n= 250  B2-all7:  24 (  9.6%)   B1-attn:  11 (  4.4%)
+                 both= 11   B2-all7-only= 13   B1-attn-only=  0   neither=226
+                 Jaccard=0.458   overlap obs=11  indep=1.1  subsume=11
+                 axis position=+1.00  (SUBSUMPTION-like)
+                 McNemar exact binomial: stat=0.000 p=0.0002  *SIG*
+
+
+B3-mlp  vs  B2-all7
+  [introductory ] n= 250  B3-mlp:  74 ( 29.6%)   B2-all7:  65 ( 26.0%)
+                 both= 55   B3-mlp-only= 19   B2-all7-only= 10   neither=166
+                 Jaccard=0.655   overlap obs=55  indep=19.2  subsume=65
+                 axis position=+0.78  (intermediate)
+                 McNemar chi2 Yates 1df: stat=2.207 p=0.1374
+
+  [interview    ] n= 250  B3-mlp:  27 ( 10.8%)   B2-all7:  24 (  9.6%)
+                 both= 17   B3-mlp-only= 10   B2-all7-only=  7   neither=216
+                 Jaccard=0.500   overlap obs=17  indep=2.6  subsume=24
+                 axis position=+0.67  (intermediate)
+                 McNemar exact binomial: stat=7.000 p=0.6291
+
+
+C1-curr  vs  B1-attn
+  [introductory ] n= 250  C1-curr:  85 ( 34.0%)   B1-attn:  59 ( 23.6%)
+                 both= 53   C1-curr-only= 32   B1-attn-only=  6   neither=159
+                 Jaccard=0.582   overlap obs=53  indep=20.1  subsume=59
+                 axis position=+0.85  (SUBSUMPTION-like)
+                 McNemar chi2 Yates 1df: stat=16.447 p=0.0001  *SIG*
+
+  [interview    ] n= 250  C1-curr:  24 (  9.6%)   B1-attn:  11 (  4.4%)
+                 both=  9   C1-curr-only= 15   B1-attn-only=  2   neither=224
+                 Jaccard=0.346   overlap obs=9  indep=1.1  subsume=11
+                 axis position=+0.80  (intermediate)
+                 McNemar exact binomial: stat=2.000 p=0.0023  *SIG*
+
+
+C1-curr  vs  B3-mlp
+  [introductory ] n= 250  C1-curr:  85 ( 34.0%)   B3-mlp:  74 ( 29.6%)
+                 both= 58   C1-curr-only= 27   B3-mlp-only= 16   neither=149
+                 Jaccard=0.574   overlap obs=58  indep=25.2  subsume=74
+                 axis position=+0.67  (intermediate)
+                 McNemar chi2 Yates 1df: stat=2.326 p=0.1273
+
+  [interview    ] n= 250  C1-curr:  24 (  9.6%)   B3-mlp:  27 ( 10.8%)
+                 both= 16   C1-curr-only=  8   B3-mlp-only= 11   neither=215
+                 Jaccard=0.457   overlap obs=16  indep=2.6  subsume=24
+                 axis position=+0.63  (intermediate)
+                 McNemar exact binomial: stat=8.000 p=0.6476
+
+
+A4-attn-r96  vs  A3-mlp
+  [introductory ] n= 250  A4-attn-r96:  86 ( 34.4%)   A3-mlp:  80 ( 32.0%)
+                 both= 63   A4-attn-r96-only= 23   A3-mlp-only= 17   neither=147
+                 Jaccard=0.612   overlap obs=63  indep=27.5  subsume=80
+                 axis position=+0.68  (intermediate)
+                 McNemar chi2 Yates 1df: stat=0.625 p=0.4292
+
+  [interview    ] n=  87  A4-attn-r96:   8 (  9.2%)   A3-mlp:  11 ( 12.6%)
+                 both=  6   A4-attn-r96-only=  2   A3-mlp-only=  5   neither= 74
+                 Jaccard=0.462   overlap obs=6  indep=1.0  subsume=8
+                 axis position=+0.71  (intermediate)
+                 McNemar exact binomial: stat=2.000 p=0.4531
+
+
+A5-mlp-r11  vs  A1-attn
+  [introductory ] n= 250  A5-mlp-r11:  53 ( 21.2%)   A1-attn:  70 ( 28.0%)
+                 both= 41   A5-mlp-r11-only= 12   A1-attn-only= 29   neither=168
+                 Jaccard=0.500   overlap obs=41  indep=14.8  subsume=53
+                 axis position=+0.69  (intermediate)
+                 McNemar chi2 Yates 1df: stat=6.244 p=0.0125  *SIG*
+
+  [interview    ] n=  61  A5-mlp-r11:   1 (  1.6%)   A1-attn:   1 (  1.6%)
+                 both=  1   A5-mlp-r11-only=  0   A1-attn-only=  0   neither= 60
+                 Jaccard=1.000   overlap obs=1  indep=0.0  subsume=1
+                 axis position=+1.00  (SUBSUMPTION-like)
+                 McNemar n/a: stat=0.000 p=1.0000
+
+
+A4-attn-r96  vs  A1-attn
+  [introductory ] n= 250  A4-attn-r96:  86 ( 34.4%)   A1-attn:  70 ( 28.0%)
+                 both= 60   A4-attn-r96-only= 26   A1-attn-only= 10   neither=154
+                 Jaccard=0.625   overlap obs=60  indep=24.1  subsume=70
+                 axis position=+0.78  (intermediate)
+                 McNemar chi2 Yates 1df: stat=6.250 p=0.0124  *SIG*
+
+  [interview    ] n=  87  A4-attn-r96:   8 (  9.2%)   A1-attn:   5 (  5.7%)
+                 both=  4   A4-attn-r96-only=  4   A1-attn-only=  1   neither= 78
+                 Jaccard=0.444   overlap obs=4  indep=0.5  subsume=5
+                 axis position=+0.78  (intermediate)
+                 McNemar exact binomial: stat=1.000 p=0.3750
+
+
+A3-mlp  vs  A5-mlp-r11
+  [introductory ] n= 250  A3-mlp:  80 ( 32.0%)   A5-mlp-r11:  53 ( 21.2%)
+                 both= 39   A3-mlp-only= 41   A5-mlp-r11-only= 14   neither=156
+                 Jaccard=0.415   overlap obs=39  indep=17.0  subsume=53
+                 axis position=+0.61  (intermediate)
+                 McNemar chi2 Yates 1df: stat=12.291 p=0.0005  *SIG*
+
+  [interview    ] n=  61  A3-mlp:   6 (  9.8%)   A5-mlp-r11:   1 (  1.6%)
+                 both=  1   A3-mlp-only=  5   A5-mlp-r11-only=  0   neither= 55
+                 Jaccard=0.167   overlap obs=1  indep=0.1  subsume=1
+                 axis position=+1.00  (SUBSUMPTION-like)
+                 McNemar exact binomial: stat=0.000 p=0.0625
+
+
+C1-curr  vs  A4-attn-r96
+  [introductory ] n= 250  C1-curr:  85 ( 34.0%)   A4-attn-r96:  86 ( 34.4%)
+                 both= 62   C1-curr-only= 23   A4-attn-r96-only= 24   neither=141
+                 Jaccard=0.569   overlap obs=62  indep=29.2  subsume=85
+                 axis position=+0.59  (intermediate)
+                 McNemar chi2 Yates 1df: stat=0.000 p=1.0000
+
+  [interview    ] n=  87  C1-curr:   9 ( 10.3%)   A4-attn-r96:   8 (  9.2%)
+                 both=  6   C1-curr-only=  3   A4-attn-r96-only=  2   neither= 76
+                 Jaccard=0.545   overlap obs=6  indep=0.8  subsume=8
+                 axis position=+0.72  (intermediate)
+                 McNemar exact binomial: stat=2.000 p=1.0000
+
+
+A1-attn  vs  base-loop
+  [introductory ] n= 250  A1-attn:  70 ( 28.0%)   base-loop:  48 ( 19.2%)
+                 both= 37   A1-attn-only= 33   base-loop-only= 11   neither=169
+                 Jaccard=0.457   overlap obs=37  indep=13.4  subsume=48
+                 axis position=+0.68  (intermediate)
+                 McNemar chi2 Yates 1df: stat=10.023 p=0.0015  *SIG*
+
+  [interview    ] n=  61  A1-attn:   1 (  1.6%)   base-loop:   1 (  1.6%)
+                 both=  0   A1-attn-only=  1   base-loop-only=  1   neither= 59
+                 Jaccard=0.000   overlap obs=0  indep=0.0  subsume=1
+                 axis position=-0.02  (DISSOCIATION-like)
+                 McNemar exact binomial: stat=1.000 p=1.0000
+
+
+A3-mlp  vs  base-loop
+  [introductory ] n= 250  A3-mlp:  80 ( 32.0%)   base-loop:  48 ( 19.2%)
+                 both= 36   A3-mlp-only= 44   base-loop-only= 12   neither=158
+                 Jaccard=0.391   overlap obs=36  indep=15.4  subsume=48
+                 axis position=+0.63  (intermediate)
+                 McNemar chi2 Yates 1df: stat=17.161 p=0.0000  *SIG*
+
+  [interview    ] n=  61  A3-mlp:   6 (  9.8%)   base-loop:   1 (  1.6%)
+                 both=  1   A3-mlp-only=  5   base-loop-only=  0   neither= 55
+                 Jaccard=0.167   overlap obs=1  indep=0.1  subsume=1
+                 axis position=+1.00  (SUBSUMPTION-like)
+                 McNemar exact binomial: stat=0.000 p=0.0625
+
+
+====================================================================================================
+FIRST-SOLVE-TURN PROFILE (introductory)   [turns labelled as in the result files]
+====================================================================================================
+run              turn1   turn2   turn3   total     repair
+base-single         43       0       0      43       0.0%
+base-loop           37       8       3      48       5.2%
+S1-single           45       0       0      45       0.0%
+A1-attn             49      15       6      70      10.4%
+A3-mlp              66       9       5      80       7.6%
+A4-attn-r96         68      11       7      86       9.9%
+A5-mlp-r11          44       6       3      53       4.4%
+B1-attn             46      10       3      59       6.4%
+B2-all7             53       9       3      65       6.1%
+B3-mlp              58      13       3      74       8.3%
+C1-curr             65      16       4      85      10.8%
+
+====================================================================================================
+REPAIR BY TURN-1 ERROR CLASS (introductory)  -- what each arm repairs FROM
+====================================================================================================
+run              WrongOutput       Timeout   RuntimeErro   InvalidForm          None
+base-loop          5.3%  208     0.0%    2            --     0.0%    3            --
+A1-attn           10.9%  193     0.0%    5            --     0.0%    3            --
+A3-mlp             7.8%  180     0.0%    4            --            --            --
+A4-attn-r96        9.9%  171    16.7%    6            --     0.0%    5            --
+A5-mlp-r11         4.1%  196    14.3%    7            --     0.0%    3            --
+B1-attn            6.0%  199    20.0%    5            --            --            --
+B2-all7            5.3%  190    28.6%    7            --            --            --
+B3-mlp             7.5%  186    40.0%    5            --     0.0%    1            --
+C1-curr           10.1%  179    40.0%    5            --     0.0%    1            --
+
+====================================================================================================
+DEGENERATION PROFILE (introductory)  -- InvalidFormat rate by turn
+====================================================================================================
+run                turn1     turn2     turn3
+base-loop           1.2%      1.4%      2.4%
+A1-attn             1.2%      0.5%      1.6%
+A3-mlp              0.0%      0.5%      1.1%
+A4-attn-r96         2.0%      0.5%      2.9%
+A5-mlp-r11          1.2%      0.5%      1.5%
+B1-attn             0.0%      4.9%      5.2%
+B2-all7             0.0%      6.6%      6.4%
+B3-mlp              0.4%      6.2%      8.4%
+C1-curr             0.4%      5.9%      7.1%
+
+====================================================================================================
+SHORTCUT SCAN + CODE LENGTH
+====================================================================================================
+run                n  shortcut%   median     p90
+base-single      713      3.65%      226     342
+base-loop        713      4.35%      190     306
+S1-single        713      3.65%      222     338
+A1-attn          713      4.77%      200     311
+A3-mlp           713      5.47%      191     296
+A4-attn-r96      713      4.91%      207     308
+A5-mlp-r11       713      3.79%      194     312
+B1-attn          685      3.94%      214     355
+B2-all7          683      3.95%      215     355
+B3-mlp           683      2.34%      213     327
+C1-curr          686      3.50%      211     347
+
+====================================================================================================
+READING GUIDE
+====================================================================================================
+
+  CAPACITY GRID -- the primary result. Read the repair-rate column down each
+      subsystem: if attention holds its rate across a 3x budget change while
+      feed-forward's scales with budget, repair is attention-hosted and the
+      apparent feed-forward advantage on solve@1 was capacity.
+
+  PAIRED REPAIR TEST -- the load-bearing comparison, because it conditions on a
+      shared turn-1 failure set and so cannot be explained by one arm simply
+      solving more at first attempt.
+
+  PAIRED OVERLAP, axis position:
+      >= +0.80  one arm nearly subsumes the other -- one mechanism, more capacity
+      <= +0.45  the arms solve materially different problems -- two mechanisms
+      between   partial; report the contingency table and let McNemar's p carry it
+
+  NOISE FLOOR -- repeat evaluation of one checkpoint moved individual tier metrics
+      by about one problem (~0.4 pp), driven by timeout non-determinism. Differences
+      of one or two problems are not interpretable.
