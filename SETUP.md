@@ -64,11 +64,13 @@ objective is the clipped surrogate with a KL term to a **frozen reference policy
 $\pi_{\text{ref}}$ (the base model):
 
 $$
-\mathcal{L}(\theta)=-\,\mathbb{E}\!\left[\min\!\big(\rho_t\hat{A},\;
-\text{clip}(\rho_t,1{-}\epsilon,1{+}\epsilon)\,\hat{A}\big)\right]
-\;+\;\beta\,D_{\mathrm{KL}}\!\left(\pi_\theta\,\Vert\,\pi_{\text{ref}}\right),
-\qquad
-\rho_t=\frac{\pi_\theta(a_t\mid s_t)}{\pi_{\theta_{\text{old}}}(a_t\mid s_t)} .
+\mathcal{L}(\theta) = -\mathbb{E}\left[\min\left(\rho_t \hat{A}, \operatorname{clip}(\rho_t, 1-\epsilon, 1+\epsilon) \hat{A}\right)\right] + \beta D_{\mathrm{KL}}\left(\pi_\theta \Vert \pi_{\text{ref}}\right)
+$$
+
+with the importance ratio
+
+$$
+\rho_t = \frac{\pi_\theta(a_t \mid s_t)}{\pi_{\theta_{\text{old}}}(a_t \mid s_t)}
 $$
 
 Because the policy's own rollouts are the training distribution, the KL to the frozen base
