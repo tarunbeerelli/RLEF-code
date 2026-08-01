@@ -24,7 +24,7 @@ the claim, and both are load-bearing.
 **The environment supplies detection and localisation.** Recent work decomposes
 self-correction into error *detection*, *localisation*, and *correction*. The harness states
 which test case failed, with expected against actual output, so the first two are handed to
-the model and only correction is measured. In the standard taxonomy this is *extrinsic*
+the model and only correction is measured. In standard taxonomy, this is *extrinsic*
 self-correction — it uses external feedback.
 
 **The result is a learnability locus.** Adapting a subspace and seeing the behaviour appear
@@ -141,8 +141,8 @@ follow from the architecture (28 layers, $d=3584$, KV width 512, feed-forward wi
 | **A4** | attention | 96 | 192 | **60,555,264** | 0.796% |
 | **A2** | all seven linear | 32 | 64 | **80,740,352** | 1.061% |
 
-**A4 matches A3 to the parameter, and A5 matches A1 within 3.1%.** That is what allows
-subsystem and capacity to be separated instead of confounded.
+**A4 matches A3 to the parameter, and A5 matches A1 within 3.1%.** This allows to draw a distinction
+between subsystem and capacity.
 
 The exact match is a consequence of grouped-query attention. LoRA on an `in → out` layer costs
 $r(\text{in}+\text{out})$, so what matters is the sum of $(\text{in}+\text{out})$ across
@@ -196,8 +196,8 @@ door:
   `max_turns` + 2 tests**, so revealed cases can never cover the graded set, and hard-coding
   them cannot pass the strict whole-question metric.
 
-Both arguments were tested rather than trusted, and both held — see
-[RESULTS §6.5](RESULTS.md#65-two-hypotheses-tested-and-discarded).
+Both are design guarantees, and they make an empirical prediction: hard-coding should not appear in the outputs.
+[RESULTS §6.5](RESULTS.md#65-two-hypotheses-tested-and-discarded) checks that rather than assuming it.
 
 ### 5.3 D1 — self-generated tests, an exploitable objective
 
@@ -241,35 +241,33 @@ the same objective from cold, the C1-vs-B1 comparison isolates the warm start ex
   distinct from the trainable policy; a rolling-KL monitor **halts** the run at a cutoff of **0.3**.
 - **Per-trajectory OOM guard.** On an out-of-memory event the offending trajectory is dropped while
   the batch's accumulated gradients survive. In practice the triggers are pathological generations —
-  runaway repetition, or contexts near the cap — so the guard also prevents one degenerate rollout
-  from dominating a step.
+  runaway repetition, or contexts near the cap — **so the guard also prevents one degenerate rollout
+  from dominating a step**.
 - **Checkpoint bookkeeping.** Rolling KL-to-base is logged every step; runs archive the final policy
   and, on drift, the least-drifted checkpoint. Evaluation **fails loudly** on a missing checkpoint
   rather than silently scoring the base model. All reported numbers come from the **final**
   checkpoint; spot checks against best-KL checkpoints differed negligibly.
-- **A LoRA checksum logged every step.** The sum of adapter weight magnitudes, which confirms the
-  intended rank and target set are actually in use. All five arms matched their analytic predictions
-  to within 2%, which is how the capacity-matching in §4 was verified in situ.
+- **A LoRA checksum logged every step.** he sum of adapter weight magnitudes. Because peft initialises lora_A from a distribution fixed by fan_in, this sum is predictable from the rank, target set and layer dimensions alone — so it confirms that the adapter which loaded is the one configured. Every arm reproduced its predicted value, and the ratios came out as they must: the rank-96 attention arm logs three times the rank-32 one, and all-7 logs the sum of the attention and feed-forward arms. That is how the capacity-matching in §4 was verified in situ.
 
 ---
 
 ## 7. Infrastructure and hyperparameters
-
+ 
 All runs: **one NVIDIA H200 (141 GB HBM3e, ~4.8 TB/s)**, bf16, with **vLLM and PyTorch
 co-resident**. The case for a single GPU as the right instrument is in the
 [README](README.md#a-deliberately-single-gpu-design). The engineering that makes it work:
-
+ 
 - **Sequential per-question rollout.** PyTorch processes one problem at a time — its full group of
   12 generations — with gradient accumulation across the batch. Peak memory tracks a single group,
   the ~15k-token multi-turn KV cache always fits, and the OOM guard can drop a pathological
   trajectory without losing the step.
-- **Context-aware sizing.** The binding constraint is the concurrent KV cache, which scales with
-  `max_turns` × concurrency. Batch size and the vLLM split were set against each
-  configuration's real context length, with buffer.
+- **KV cache is the binding constraint.** It scales with `max_turns` × concurrency, and the hardest
+  problems reach ~15k-token contexts. The device accommodates a batch of 12 problems at a 0.65
+  generation split, so every matched run shares that sizing and training curves differ only by
+  adapter, not by how much work a step did.
 - **Memory path.** FlashAttention-2 with automatic SDPA fallback, and gradient checkpointing.
-
 ### Hyperparameters
-
+ 
 | Parameter | Value | Notes |
 |---|---|---|
 | Base model | Qwen2.5-Coder-7B-Instruct | native 7B (§8), bf16 |
@@ -284,15 +282,13 @@ co-resident**. The case for a single GPU as the right instrument is in the
 | KL hard cutoff | 0.3 | halts the run |
 | Epochs | 1 (C1: 2 + 0.15 replay) | one epoch ⇒ no cross-problem repetition |
 | Min tests per problem | ≥ `max_turns` + 2 | non-exhaustive shown set (§5.2) |
-| vLLM split / batch — standard | 0.45 / 10 | shorter contexts |
-| vLLM split / batch — D1 | 0.45 / 8 | self-graded regime |
-| vLLM split / batch — C1 | 0.60 / 6 | longest individual sequences |
+| Batch size (problems per step) | 12 | uniform across arms |
+| vLLM generation split | 0.65 | remainder to the PyTorch update |
 | `max_lora_rank` (vLLM) | 128 | required for the rank-96 arm |
 | Hardware | 1 × H200 (141 GB) | vLLM and PyTorch co-resident |
-
-The matched round of runs was executed at a uniform batch size of 12, so training curves across
-adapter arms are directly comparable.
-
+ 
+D1 predates this configuration and is not batch-matched to the other arms.
+ 
 ---
 
 ## 8. Model — Qwen2.5-Coder-7B-Instruct
