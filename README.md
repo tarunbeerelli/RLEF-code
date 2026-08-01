@@ -29,12 +29,12 @@ aggregate.
 >
 > **Single-shot capability is a different quantity**: capacity-bound and largely
 > subsystem-agnostic, converging at the high budget (27.2% against 26.4%). And a
-> staged attention-only curriculum matches the best rank-96 result on one third of its trainable parameters.
+> staged attention-only curriculum matches the best rank-96 result on **one third** of its trainable parameters.
 
-The object of study is error-conditioned repair: converting a localised, verified failure into a passing attempt,
+The object of study is **error-conditioned repair**: converting a localised, verified failure into a passing attempt,
 with detection and localisation supplied by the harness. What the ablation identifies is where that behaviour
-is learnable — which parameters to adapt if you want a model to acquire it.
-[SETUP §1](SETUP.md#1-what-the-study-measures) makes both precise.
+is **learnable** — which parameters to adapt if you want a model to acquire it.
+[SETUP §1](SETUP.md#1-what-the-study-measures) makes this precise.
 
 **Live experiment tracking:**
 [W&B — rlef-code2 workspace](https://wandb.ai/tarunbeerelli-northeastern-university/rlef-code2/workspace)
