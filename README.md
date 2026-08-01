@@ -6,7 +6,7 @@ model taught to repair its own code, trained end-to-end on a single GPU.**
 RLEF-Code is a from-scratch multi-turn **GRPO** pipeline that teaches
 Qwen2.5-Coder-7B-Instruct to iterate against real execution feedback: write code, run it
 against held-out tests, read the failure, revise. It runs on the APPS dataset across all
-three difficulty tiers, and it exists to answer a mechanistic question, not to chase a
+three difficulty tiers, and it exists to answer a mechanistic question, rather than chase a
 leaderboard: **when a model learns to repair its own errors, which part of it does
 the learning?**
 
@@ -28,14 +28,13 @@ aggregate.
 > (p = 1.000 against the untrained loop).
 >
 > **Single-shot capability is a different quantity**: capacity-bound and largely
-> subsystem-agnostic, converging at the high budget (27.2% against 26.4%). And a staged
-> attention-only curriculum reaches the same score as a 3× larger adapter at **one third**
-> the trainable parameters.
+> subsystem-agnostic, converging at the high budget (27.2% against 26.4%). And a
+> staged attention-only curriculum matches the best rank-96 result on one third of its trainable parameters.
 
-The object of study is **error-conditioned repair** — converting a localised, verified
-failure into a passing attempt — and the result is a **learnability locus** rather than a
-representational one. Both are made precise in
-[SETUP §1](SETUP.md#1-what-the-study-measures).
+The object of study is error-conditioned repair: converting a localised, verified failure into a passing attempt,
+with detection and localisation supplied by the harness. What the ablation identifies is where that behaviour
+is learnable — which parameters to adapt if you want a model to acquire it.
+[SETUP §1](SETUP.md#1-what-the-study-measures) makes both precise.
 
 **Live experiment tracking:**
 [W&B — rlef-code2 workspace](https://wandb.ai/tarunbeerelli-northeastern-university/rlef-code2/workspace)
@@ -204,8 +203,8 @@ competence. Attention-only multi-turn training then opens a real `solve@1 → so
 The feed-forward arm initially appeared to be the stronger capability lever — until
 capacity-matched controls showed that advantage was **trainable-parameter count**, while the
 repair advantage is attention's and survives matching. A self-graded objective collapses into
-reward-hacking exactly where the instrumentation predicted. An attention-only curriculum
-matches a 3× larger adapter at a third the parameters. And a duplicated configuration puts a
+reward-hacking exactly where the instrumentation predicted. An attention-only curriculum matches the rank-96 arm on a third of its parameters.
+And a duplicated configuration puts a
 measured number on run-to-run reliability, which is what fixes the resolution of every claim
 that follows.
 
