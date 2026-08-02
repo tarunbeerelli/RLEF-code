@@ -201,8 +201,9 @@ unchanged, which is what makes later in-loop gains attributable to repair rather
 competence. Attention-only multi-turn training then opens a real `solve@1 → solve@3` gap.
 The feed-forward arm initially appeared to be the stronger capability lever — until
 capacity-matched controls showed that advantage was **trainable-parameter count**, while the
-repair advantage is attention's and survives matching. A self-graded objective collapses into
-reward-hacking exactly where the instrumentation predicted. An attention-only curriculum matches the rank-96 arm on a third of its parameters.
+repair advantage is attention's and survives matching. A gameable auxiliary reward term collapses
+one objective exactly where the instrumentation predicted. An attention-only curriculum matches
+the rank-96 arm on a third of its parameters.
 And a duplicated configuration puts a
 measured number on run-to-run reliability, which is what fixes the resolution of every claim
 that follows.
