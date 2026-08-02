@@ -123,8 +123,8 @@ metric keeps the reported bar high. Partial credit is never reported as a solve.
 
 > **Scope.** The dense reward and strict metric apply to every trained run after the
 > single-shot reference (S1), which used the standard binary reward as a pure single-shot
-> control. D1's reward is the dense pass-rate over the model's *own* generated tests —
-> exactly the surface that lets it collapse (§5.3).
+> control. D1 is scored on the real held-out pass rate like every other arm, with an additional
+> ±0.15 term for test quality — which is the surface that lets it collapse (§5.3).
 
 ---
 
@@ -199,14 +199,18 @@ door:
 Both are design guarantees, and they make an empirical prediction: hard-coding should not appear in the outputs.
 [RESULTS §6.5](RESULTS.md#65-two-hypotheses-tested-and-discarded) checks that rather than assuming it.
 
-### 5.3 D1 — self-generated tests, an exploitable objective
+### 5.3 D1 — self-generated tests, and a reward term that could be gamed
 
-D1 has the model write its own tests before coding (**anchor + TDD**): the prompt supplies the
-first real case as an anchor, the model authors further tests from it, those tests run, and the
-reward is the model's code against the model's tests, with a **hard-code detector** penalising
-trivially-satisfiable tests. The intent was to induce deeper self-reasoning; the outcome is a
-clean Goodhart collapse, because the model owns both sides of the objective and can co-adapt
-them ([RESULTS §5.4](RESULTS.md#54-d1--self-graded-tests-and-a-goodhart-collapse)).
+D1 has the model write three tests before coding, anchored by one real case supplied in the prompt. It
+is scored on the real held-out pass rate, exactly like every other arm — it cannot earn reward by
+writing easy tests. Alongside that sits a test-quality term: −0.1 if its tests fail its own code, −0.15
+if they pass even a stub implementation, +0.15 if they pass its code and fail the stub. Feedback each
+turn is its own tests' execution output plus the last failed real case.
+
+The auxiliary term is the flaw. It rewards agreement between the model's code and the model's tests,
+which is not correctness: wrong code paired with tests tailored to it collects the full bonus. And it
+is cheap — securing +0.15 needs no capability, while moving the real pass rate does. Two components
+compete on very different terms, and the affordable one wins ([RESULTS §5.4](RESULTS.md#54-d1--self-graded-tests-and-a-goodhart-collapse)).
 
 ### 5.4 B series — real held-out tests
 
