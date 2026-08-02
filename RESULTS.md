@@ -14,8 +14,9 @@
 > **When a model learns to repair its own errors under execution feedback, which part of it does the
 > learning?**
 
-The study set out to show that the behaviour is attention-hosted. A five-arm ablation with capacity
-held fixed supports that, while overturning two intermediate claims along the way.
+The study set out to test whether the behaviour is attention-hosted.
+A five-arm ablation with capacity held fixed supports that, and separates it from two things
+it could have been mistaken for: trainable-parameter count, and low policy drift.
 
 > **Repair is hosted by the attention projections, and it does not scale with capacity.** Attention
 > holds a repair rate of **9.9–11.4%** across a 3× trainable-parameter change; feed-forward reaches
@@ -134,8 +135,8 @@ multi-turn prompt and is not significant (z = 0.73), but it is why trained runs 
 matched `base-loop`.
 
 **S1** trains single-shot on attention parameters and reaches **18.0%**, indistinguishable from
-`base-single`'s 17.2% (z = 0.23). Attention adaptation alone does not move first-attempt capability, so
-for the attention arms in-loop gains are not smuggled single-shot competence.
+`base-single`'s 17.2% (z = 0.23). Attention adaptation alone does not move first-attempt capability, so for the attention arms,
+any in-loop gain is repair rather than single-shot competence in disguise.
 
 ### 5.2 The capacity-controlled ablation
 
@@ -160,8 +161,8 @@ indistinguishable (27.2 against 26.4, z = +0.20), and tripling the budget lifts 
 sweep gives z = +2.38 on solve@1 and +2.73 on solve@3, the attention sweep z = +2.01 and +1.54. What
 appeared at rank 32 to be a feed-forward capability advantage was budget.
 
-**All-7 is dominated.** A2 carries the most parameters, the most drift, and neither the best level nor
-the best repair — replicating an established PEFT result (§6.4).
+**All-7 is dominated on this tier.** A2 carries the most parameters and the most drift, while A1 beats it
+on every introductory metric at a quarter of the budget — replicating an established PEFT result (§6.4).
 
 ### 5.3 B series — real held-out tests
 
@@ -175,23 +176,23 @@ once (use the tests as a tool, and use feedback) acquires neither fully. That is
 curriculum acts on. A more mechanical factor also depresses the B series, visible only in per-turn error
 classes: the regime loses roughly one later turn in fifteen to unparseable output (§7).
 
-### 5.4 D1 — self-graded tests and a Goodhart collapse
+### 5.4 D1 — self-generated tests and a Goodhart collapse
 
 D1 has the model author its own tests before coding, then grades its code against them. The objective
-collapsed: introductory solve@1 fell to **3.6%**, below the untrained baseline, while training KL climbed
+collapsed: introductory solve@1 fell to **3.6%**, way below the untrained baseline, while training KL climbed
 monotonically.
 
 <img src="assets/goodhart_training_curve.png" width="620" alt="D1 training success rate">
 
-The instructive part is the shape of the training curve. It stays high and even trends upward
-(mean ≈ 0.35, swinging ~0.1–0.75 across ~190 updates) because it scores the model against a yardstick
-the model itself is bending. Two forces produce the signature. The reward is computed on the model's own
-tests, so as code and tests co-adapt, *self-reported* success stays high while real correctness does not
-follow. And the metric tracks a group of 12 rollouts at temperature 0.7, so it effectively reports the
-**best of the group**: a minority still follow the intended refinement path, and their intermittent
-successes keep the aggregate elevated while most of the group converges on the exploit. Greedy
-single-generation evaluation on real held-out tests then reports the **dominant** mode, and the number
-collapses.
+The instructive part is the shape of that training curve. It stays high and even trends upward
+(mean ≈ 0.35, swinging ~0.1–0.75 across ~190 updates) on the same whole-question measure the other arms
+use. Two forces produce the divergence. The auxiliary test-quality term pays +0.15 for tests that pass
+the model's own code and fail a stub — a proxy for good tests that measures self-consistency, and one
+obtainable without any capability, while the real pass rate it competes against is expensive to move. And
+the training metric reports the best of twelve rollouts at temperature 0.7, so intermittent successes hold
+the curve up while the modal trajectory degrades. Greedy single-generation eval reports that modal
+trajectory, and it collapses to 3.6%. The obvious alternative fails: writing three tests might simply
+have crowded the code out of the 1,200-token budget, but a re-run at 1,500 collapsed identically.
 
 The methodological lesson: **greedy evaluation is the integrity check that a temperature-sampled,
 multi-generation training curve cannot be.**
@@ -225,7 +226,7 @@ conditions on the same problems. Full output:
 Restricting to problems **both arms failed at turn 1** isolates repair from single-shot capability.
 Introductory tier:
 
-| Comparison | shared failures | A repaired | B repaired | discordant | McNemar |
+| Comparison | shared failures | former repaired | latter repaired | discordant | McNemar |
 |---|---|---|---|---|---|
 | **A1 attn vs A5 ffn** (matched ~20 M) | 194 | 21 (10.8%) | 9 (4.6%) | 17 : 5 | **p = 0.017** |
 | **A1 attn vs `base-loop`** | 194 | 21 (10.8%) | 8 (4.1%) | 17 : 4 | **p = 0.007** |
@@ -240,16 +241,16 @@ failures than feed-forward; attention training significantly adds repair over un
 feed-forward training at that budget adds **nothing measurable** — 8 repairs against the baseline's 9, on
 200 shared failures.
 
-The matched-capacity comparison at the *high* budget is directional but not significant (p = 0.581), and
-the within-subsystem capacity sweeps are both non-significant — consistent with capacity mattering for
-level rather than for repair.
+At the high budget the same comparison points the same way without reaching significance (8.4% against 6.6%, p = 0.581). Conditioning bites harder there: both arms solve more at turn 1, so the shared failure set is the residue two stronger policies both missed — 166 problems rather than 194 — and less repairable by either. On each arm's own failure set the separation holds, 9.9% against 7.6%. The within-subsystem capacity sweeps are likewise non-significant, consistent with capacity setting level rather than repair.
 
 ### 6.2 Level: same score, different problems
 
-At matched capacity, attention and feed-forward reach statistically identical introductory scores while
-disagreeing about which problems they solve. A4 against A3 at solve@1: 68 against 66, **50 shared, 18
-A4-only, 16 A3-only**, Jaccard 0.595, axis position +0.67, McNemar p = 0.864. A third of the combined
-solve set belongs to exactly one arm, with a perfectly symmetric discordance.
+Level and repair behave differently; this is the level half. At matched capacity the two subsystems
+converge on introductory solve@1 — as the capacity account requires — but reach that level by solving
+different problems. A4 and A3 score 68 and 66, and agree on only 50: another 34 are solved by one arm
+and missed by the other, split 18 to 16 (Jaccard 0.595, axis +0.67, McNemar p = 0.864). Neither is a
+subset of the other; they reach the same total by different routes. The same holds within the loop —
+86 and 80, 63 shared, 40 discordant, p = 0.429.
 
 The same holds for the curriculum against feed-forward — C1 against A3 at solve@1 gives 48 shared, 17 and
 18 exclusive, p = 1.000; against B3 on a matched objective, 45 shared, 20 and 13 exclusive, p = 0.296.
@@ -268,12 +269,15 @@ start.
 | solve@1 | 65 | 46 | 41 | 24 | **5** | +0.85 | **p = 0.0008** |
 | solve@3 | 85 | 59 | 53 | 32 | **6** | +0.85 | **p = 0.0001** |
 
-The curriculum **nearly subsumes** its cold-start equivalent, retaining all but 5–6 of its solves while
-adding 24 and 32. These are the two most significant paired results in the study, and they establish that
-the phases **accumulate**: staging approximates monotone improvement. The matched control also sharpens a
-figure available from the cross-regime comparison alone — against A1, C1 appears to lose 14 problems at
-solve@3, but A1 trained on the other objective, so that number conflates the regime change with the
-staging. Against B1, only 6 are lost.
+The curriculum **nearly subsumes** its cold-start equivalent: all but 5 or 6 of B1's solves are retained,
+with 24 and 32 new ones on top. Staging is close to pure addition — the second phase rarely costs what
+the first phase gained — and both comparisons are significant (p = 0.0008 and p = 0.0001), the
+strongest paired results in the study.
+
+The matched control also corrects a figure the cross-regime comparison gets wrong. Against A1, C1
+appears to lose 14 problems at solve@3; but A1 trained on the other objective, so that number
+conflates the change of regime with the staging. Against B1, which differs only in the warm start,
+the loss is 6.
 
 ### 6.4 The combined adapter
 
@@ -331,8 +335,13 @@ capacity-grid arms; A2 (all-7) is tabulated with them:
 
 <img src="assets/drift_vs_repair.png" width="570" alt="Drift against repair">
 
-**Rank sets drift, not subsystem** — and at matched parameters attention drifts *more* than feed-forward,
-0.061 against 0.040 at ~20 M and 0.101 against 0.073 at 60.56 M. Attention's advantage lies elsewhere.
+Drift rises with both rank and parameter count, and this design cannot separate them. Within a
+subsystem, tripling rank raises drift by 1.7–1.8× (attention 0.061 → 0.101; feed-forward 0.040 →
+0.073). At matched parameters, attention drifts 1.4–1.5× more than feed-forward (0.061 against 0.040;
+0.101 against 0.073). Because feed-forward costs exactly 3× attention per unit rank
+(SETUP §4), matching parameters
+always unmatches rank by the same factor, so every row varies both at once — and all-7 at rank 32
+drifts more than attention at rank 96. What is unambiguous is that attention is not the low-drift lever.
 
 At low rank it is the high-return lever. Repair per unit rolling KL: **A1 171**, A5 110, A3 104,
 A4 98, A2 54. The optimum is not attention in general but **attention at rank 32**, which returns
@@ -384,7 +393,7 @@ two-proportion z-tests against `base-loop` on the introductory tier:
 
 - **The paired tests are the stronger evidence where they apply**, because pairing removes between-problem
   difficulty variance. Where paired and unpaired disagree, the paired result is the one to trust.
-- **All runs are single-seed except A4**, which has two; §2 quantifies what that costs.
+- **All runs are single-seed except A4**, which has two; §2 quantifies what that gains.
 - **The hard tiers are out of scope** (§2) and, at 1–5 problems out of 213, underpowered regardless.
 
 ---
@@ -432,17 +441,18 @@ two-proportion z-tests against `base-loop` on the introductory tier:
    attention arm repaired 21 against the feed-forward arm's 9 (McNemar p = 0.017), and feed-forward at that
    budget is indistinguishable from no training at all (p = 1.000).
 3. **Single-shot capability is a different quantity** — capacity-bound, subsystem-agnostic at the high
-   budget (27.2 against 26.4), and more capacity-sensitive for feed-forward than for attention. The apparent
-   feed-forward capability advantage at rank 32 was budget.
-4. **Equal scores are reached by different routes.** At matched capacity the two subsystems disagree about a
-   third of the problems they solve, with symmetric discordance (p = 0.864).
-5. **Staging substitutes for capacity, and accumulates.** The curriculum matches a 3× larger adapter at one
-   third the parameters, and against its own cold-start control adds 32 problems while losing 6 (p = 0.0001).
-6. **Drift scales with rank, not with subsystem** — attention drifts more per parameter — but attention at
-   rank 32 returns 171 repair-points per unit KL against 98–110 for the other single-subsystem arms and 54
-   for all-7, making low-rank attention the efficiency optimum.
-7. **Repair needs latent capability and honest feedback.** Untrained iteration repairs 5.2%; a self-graded
-   objective collapses below baseline; real held-out tests succeed.
+   budget (27.2 against 26.4), and more capacity-sensitive for feed-forward than for attention. What looked at
+   equal rank like a feed-forward advantage was the 3× parameter budget that comes with it.
+4. **Equal scores are reached by different routes.** At matched capacity the two subsystems agree on
+   only 50 problems at solve@1 and disagree on 34 (p = 0.864), and the same ~40% discordance holds
+   at solve@3 (63 shared, 40 discordant).
+5. **Staging substitutes for capacity, and accumulates.** The curriculum matches the rank-96 arm on one
+   third of its parameters, and against its own cold-start control adds 32 problems while losing 6 (p = 0.0001).
+6. **Drift rises with rank and with parameter count, which this design cannot separate** — but
+   attention at rank 32 returns 171 repair-points per unit KL against 98–110 for the other
+   single-subsystem arms and 54 for all-7, making low-rank attention the efficiency optimum.
+7. **Repair needs latent capability and honest reward.** Untrained iteration repairs 5.2%; a gameable
+   auxiliary reward term collapses the policy below baseline (D1) while real held-out tests alone succeed.
 8. **Measurement discipline set the scope.** A duplicated configuration fixed the resolution of every
    claim, and two hypotheses — test memorisation and output-convention repair — were tested and discarded.
    What remains is what the measurements bear.
