@@ -69,7 +69,8 @@ attention's own budget it sits *below* the untrained baseline. Every figure here
 One configuration was trained twice, to put a measured number on run-to-run reliability. Introductory scores moved by 0–3 problems; interview scores moved by 12–13, which
 is itself significant (z ≈ 2.2).
 
-That result confirms the design. The dense reward targets problems a few edits from correct,
+That result confirms the design. The reward targets problems a few edits from correct — dense
+case-passing plus a bonus for improving on the previous turn -
 which is the introductory tier; the harder tiers turn on algorithm-switching that the reward
 does not pay for, and their low base rates leave them dominated by problems sitting at the
 threshold of solvability. The introductory tier is where the instrument is pointed and where
