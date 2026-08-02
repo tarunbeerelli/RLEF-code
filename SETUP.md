@@ -210,7 +210,7 @@ turn is its own tests' execution output plus the last failed real case.
 The auxiliary term is the flaw. It rewards agreement between the model's code and the model's tests,
 which is not correctness: wrong code paired with tests tailored to it collects the full bonus. And it
 is cheap — securing +0.15 needs no capability, while moving the real pass rate does. Two components
-compete on very different terms, and the affordable one wins ([RESULTS §5.4](RESULTS.md#54-d1--self-graded-tests-and-a-goodhart-collapse)).
+compete on very different terms, and the affordable one wins ([RESULTS §5.4](RESULTS.md#54-d1--self-generated-tests-and-a-goodhart-collapse)).
 
 ### 5.4 B series — real held-out tests
 
