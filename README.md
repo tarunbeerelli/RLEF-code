@@ -87,9 +87,10 @@ one another. Drift does:
 
 <img src="assets/rolling_kl_A.png" width="650" alt="Rolling KL to the frozen base, A series">
 
-Drift scales with adapter **rank**, and at matched parameters attention drifts *more* than
-feed-forward (0.061 against 0.040 at ~20 M; 0.101 against 0.073 at 60.56 M). What
-distinguishes attention at low rank is the return: the rank-32 attention arm yields **171**
+Drift rises with rank and with parameter count, which this design cannot separate — but
+attention at rank 32 returns 171 repair-points per unit KL against 98–110 for the other
+single-subsystem arms and 54 for all-7, making low-rank attention the efficiency optimum.
+the rank-32 attention arm yields **171**
 repair-points per unit KL, against 98–110 for the other single-subsystem arms and 54 for
 all-7. Low-rank attention adaptation is the efficiency optimum, and the curriculum stages
 from exactly there.
