@@ -134,7 +134,7 @@ arm is measured against. The nominal turn-1 offset between the two baselines ref
 multi-turn prompt and is not significant (z = 0.73), but it is why trained runs are compared to the
 matched `base-loop`.
 
-**S1** trains single-shot on attention parameters and reaches **18.0%**, indistinguishable from
+**S1** trains single-shot (Binary Pass rate) on attention parameters and reaches **18.0%**, indistinguishable from
 `base-single`'s 17.2% (z = 0.23). Attention adaptation alone does not move first-attempt capability, so for the attention arms,
 any in-loop gain is repair rather than single-shot competence in disguise.
 
