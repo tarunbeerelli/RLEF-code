@@ -93,6 +93,22 @@ $$
 Four of ten graded cases passing yields $r=0.4$. This is a **dense** reward, and a deliberate
 departure from RLEF (Gehring et al., 2025), which uses an **all-or-nothing binary** reward.
 
+### Reward components
+
+The reward is computed per turn and one turn is banked per episode — the turn that solves the
+problem, or the last turn if none does. That banked value is:
+
+| Component | Value | Condition |
+|---|---|---|
+| Graded pass rate | `pass_rate` ∈ [0, 1] | dense; binary for S1 |
+| Valid format | +0.02 | output parsed successfully |
+| Reasoning present | +0.02 | a reasoning block was emitted |
+| Edge-case block present | +0.02 | D1 only |
+| Partial-progress credit | +0.10 | 0 < `pass_rate` < 1 |
+| Turn cost | −0.05 | always |
+| Improvement over the previous turn | +0.10 | `pass_rate` rose and turn > 1 |
+| Generated-test quality | −0.10 / −0.15 / +0.15 | D1 only (§5.3) |
+
 The two rewards incentivise different behaviours, and choosing the dense one is what makes
 this a repair study and not a coding one.
 
