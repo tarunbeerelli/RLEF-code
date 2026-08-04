@@ -123,7 +123,8 @@ split. For a controlled mechanistic study this is the right instrument.
 - **A custom multi-turn loop.** A multi-turn trajectory is one conversation, not a prompt and a
   completion: executed feedback is interleaved between the model's turns, so each turn conditions on
   a different prefix. The loop trains on the concatenated conversation in a single pass, applying one
-  trajectory-level advantage across every turn the policy emitted and letting causal attention supply
+  trajectory-level advantage across every turn the policy emitted, with injected feedback tokens
+  masked from the loss and letting causal attention supply
   the per-turn conditioning. Writing it directly kept that explicit — and kept the vLLM/PyTorch
   memory split and the per-trajectory OOM guard calibratable.
 
