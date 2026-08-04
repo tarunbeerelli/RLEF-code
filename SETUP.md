@@ -73,6 +73,21 @@ $$
 \rho_t = \frac{\pi_\theta(a_t \mid s_t)}{\pi_{\theta_{\text{old}}}(a_t \mid s_t)}
 $$
 
+**This runs strictly on-policy: one optimiser step per batch of rollouts, so $\rho_t \equiv 1$
+and the surrogate reduces to a group-baselined policy gradient.** The ratio and its clip exist to
+make *reuse* of rollouts safe — with several gradient steps per batch, the policy drifts away from
+the one that sampled the data and $\rho_t$ corrects for it. Taking a single step means no such gap
+opens, so $\epsilon$ never binds.
+
+That is a deliberate trade. Reusing rollouts would extract more updates from each multi-turn
+episode, which is attractive when every episode costs sandbox execution. But it requires the
+sampling distribution's own per-token log-probabilities, and vLLM and PyTorch do not agree to the
+last bit on the same tokens under the same weights — different kernels and precision. Those
+disagreements enter as ratios a few percent from 1, which is numerical mismatch rather than genuine
+policy movement, and the advantage then amplifies it. Staying single-step makes $\rho_t$ exactly 1
+by construction and keeps that noise out of the gradient. Stability comes instead from the KL term
+and from gradient-norm clipping (§6).
+
 Because the policy's own rollouts are the training distribution, the KL to the frozen base
 doubles as the operational read-out of **policy drift**. It carries unusual weight here: the
 arms reach nearly identical *training* performance, so drift is the measurement that
@@ -254,9 +269,16 @@ the same objective from cold, the C1-vs-B1 comparison isolates the warm start ex
 
 ## 6. Guardrails
 
-- **Correct importance ratio and completion masking.** Per-token log-probabilities of the sampled
-  completion are gathered, the loss is masked to the completion span (prompt and feedback tokens
-  excluded), and $\rho_t$ is clipped against the behaviour log-probabilities recorded at rollout.
+- **Completion masking and a single on-policy step.** The loss is masked to the completion span
+  (prompt and feedback tokens excluded) and, per-token log-probabilities of the sampled
+  completions are gathered from the training-side forward pass, so the ratio is computed against the
+  same weights that sampled the episode and equals 1 exactly (§2). Sampling log-probabilities are
+  also returned by the rollout engine, but they are per-turn sums rather than per-token, and using
+  them would substitute cross-engine numerical noise for a quantity that is analytically 1 — so they
+  are recorded and not consumed.
+- **Gradient-norm clipping.** The full gradient is rescaled to an L2 norm of 1.0 before each
+  optimiser step, so no single pathological trajectory can dominate an update. This is the
+  update-magnitude safeguard; the KL term is the trust region.
 - **Frozen-reference KL with a hard early-stop.** The KL is taken against a frozen base snapshot
   distinct from the trainable policy; a rolling-KL monitor **halts** the run at a cutoff of **0.3**.
 - **Per-trajectory OOM guard.** On an out-of-memory event the offending trajectory is dropped while
@@ -298,8 +320,10 @@ co-resident**. The case for a single GPU as the right instrument is in the
 | `max_turns` ($=k$) | 3 | fixed throughout |
 | `max_model_len` | 16 384 | full conversation budget |
 | `max_tokens` per turn | 1 200 | per-turn cap, and a divergence guard |
-| KL coefficient $\beta$ | 0.1 | |
+| KL coefficient $\beta$ | 0.1 | trust region against the frozen base |
 | KL hard cutoff | 0.3 | halts the run |
+| Gradient-norm clip | 1.0 | active every step |
+| PPO clip $\epsilon$ | 0.2 | inert: one inner epoch, so $\rho_t \equiv 1$ (§2) |
 | Epochs | 1 (C1: 2 + 0.15 replay) | one epoch ⇒ no cross-problem repetition |
 | Min tests per problem | ≥ `max_turns` + 2 | non-exhaustive shown set (§5.2) |
 | Batch size (problems per step) | 12 | uniform across arms |
