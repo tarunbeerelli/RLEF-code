@@ -120,10 +120,12 @@ split. For a controlled mechanistic study this is the right instrument.
   multi-node flakiness, the seeded splits are reproducible — a precondition for paired
   per-problem comparison, and what makes the retrain variance above attributable to training
   rather than to bookkeeping.
-- **A custom multi-turn loop, by necessity.** OpenRLHF and TRL target single-turn RLHF and
-  do not host an execution environment inside the rollout, so the loop is built from
-  scratch; keeping it single-device is what kept the memory split and the OOM guard
-  calibratable.
+- **A custom multi-turn loop.** A multi-turn trajectory is one conversation, not a prompt and a
+  completion: executed feedback is interleaved between the model's turns, so each turn conditions on
+  a different prefix. The loop trains on the concatenated conversation in a single pass, applying one
+  trajectory-level advantage across every turn the policy emitted and letting causal attention supply
+  the per-turn conditioning. Writing it directly kept that explicit — and kept the vLLM/PyTorch
+  memory split and the per-trajectory OOM guard calibratable.
 
 Full infrastructure detail and every hyperparameter:
 [SETUP §7](SETUP.md#7-infrastructure-and-hyperparameters).
