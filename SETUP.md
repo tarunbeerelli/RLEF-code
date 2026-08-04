@@ -59,9 +59,18 @@ group**,
 
 $$\hat{A}_i=\frac{r_i-\mu_{\text{group}}}{\sigma_{\text{group}}+\varepsilon},$$
 
-using the group mean as a **critic-free baseline** — no value network to train or tune. The
-objective is the clipped surrogate with a KL term to a **frozen reference policy**
-$\pi_{\text{ref}}$ (the base model):
+using the group mean as a critic-free baseline — no value network to train or tune.
+
+The advantage is indexed by trajectory, not turn. One value applies across every token the policy emitted in an episode, so the objective separates trajectories that repair from trajectories that do not, without attributing the repair to a particular turn. Resolving credit to the turn is a separate design — a value head, or a per-turn decomposition of the return — and is not attempted here.
+
+The objective is the clipped surrogate with a KL term to a frozen reference policy 
+𝜋
+ref
+π
+ref
+	​
+
+ (the base model):
 
 $$
 \mathcal{L}(\theta) = -\mathbb{E}\left[\min\left(\rho_t \hat{A}, \mathrm{clip}(\rho_t, 1-\epsilon, 1+\epsilon) \hat{A}\right)\right] + \beta D_{\mathrm{KL}}\left(\pi_\theta \Vert \pi_{\text{ref}}\right)
